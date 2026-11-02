@@ -124,6 +124,18 @@ func clickLabel(t *testing.T, driver *app.Driver, label string) {
 	t.Fatalf("no hit region labelled %q", label)
 }
 
+// hitBounds is the rectangle of the first hit region with that label.
+func hitBounds(t *testing.T, driver *app.Driver, label string) ui.Rect {
+	t.Helper()
+	for _, hit := range driver.Snapshot().Hits {
+		if hit.Label == label {
+			return hit.Bounds
+		}
+	}
+	t.Fatalf("no hit region labelled %q", label)
+	return ui.Rect{}
+}
+
 // drawn reports whether the frame draws that text.
 func drawn(t *testing.T, driver *app.Driver, value string) bool {
 	t.Helper()
@@ -310,5 +322,29 @@ func TestEmptyLibrarySaysSo(t *testing.T) {
 	_, driver := newWindowWith(t, emptyStore{domain.NewMemory()})
 	if !drawn(t, driver, "还没有安装任何技能来源") {
 		t.Fatal("an empty library does not say so")
+	}
+}
+
+// TestPaneButtonsSitAboveTheSearchBox checks the column's header: the three
+// buttons share one row over the search box, and they stay inside the column at
+// the width the splitter allows, since it can be dragged that narrow.
+func TestPaneButtonsSitAboveTheSearchBox(t *testing.T) {
+	window, driver := newWindow(t)
+	pane := window.page().Pane()
+	pane.Split.Pos = pane.Min
+	if err := driver.Resize(1100, 720); err != nil {
+		t.Fatal(err)
+	}
+
+	search := hitBounds(t, driver, "搜索 Skills")
+	right := window.split.Pos + kit.SplitterWidth + pane.Split.Pos
+	for _, label := range []string{"安装", "更新", "本地文件夹"} {
+		hit := hitBounds(t, driver, label)
+		if hit.Y+hit.Height > search.Y {
+			t.Fatalf("%q is not above the search box", label)
+		}
+		if hit.X+hit.Width > right {
+			t.Fatalf("%q ends at %v, past the column's edge at %v", label, hit.X+hit.Width, right)
+		}
 	}
 }

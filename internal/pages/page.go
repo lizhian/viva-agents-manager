@@ -16,8 +16,6 @@ type Page interface {
 	Title() string
 	// Pane is the page's own column beside the content, or nil.
 	Pane() *Pane
-	// Actions are the buttons the content toolbar offers.
-	Actions() []Action
 	// Fields are the page's text fields, which the shell hands to the platform so
 	// typing reaches the focused one.
 	Fields() []*flex.Field
@@ -39,25 +37,12 @@ type Pane struct {
 	Draw func(f *flex.Frame, theme ui.Theme, width float32)
 }
 
-// Action is one button in the content toolbar.
-type Action struct {
-	ID    ui.ID
-	Label string
-	// Disabled draws the button unclickable: for what the page cannot do yet, so
-	// pressing it is not a press that does nothing.
-	Disabled bool
-	Run      func()
-}
-
 // Base answers for the parts a page does not have, so a page declares only what
 // it uses.
 type Base struct{}
 
 // Pane reports that the page has no column of its own.
 func (Base) Pane() *Pane { return nil }
-
-// Actions reports that the page offers no toolbar buttons.
-func (Base) Actions() []Action { return nil }
 
 // Fields reports that the page has no text fields.
 func (Base) Fields() []*flex.Field { return nil }

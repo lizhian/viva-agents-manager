@@ -147,18 +147,11 @@ func (s *Shell) paint(canvas *ui.Canvas, size ui.Size) {
 func (s *Shell) content(f *flex.Frame, theme ui.Theme) {
 	page := s.page()
 	f.Column().Grow(1).Children(func() {
-		// Controls inside a move region keep their own presses, so the strip still
-		// drags the window.
+		// The strip is the window's drag region, and it carries the one label that
+		// says which skill the body below is about.
 		f.Row().Height(kit.Titlebar).PadSides(0, 16+s.trailing, 0, 16).
-			Items(flex.Center).Gap(6).MovesWindow().Children(func() {
+			Items(flex.Center).MovesWindow().Children(func() {
 			f.Text(page.Title()).FontSize(12).Muted().Ellipsis()
-			f.Spacer()
-			for _, action := range page.Actions() {
-				button := f.Button(action.ID, action.Label).Outline().XSmall()
-				if button.Disabled(action.Disabled).Clicked() {
-					action.Run()
-				}
-			}
 		})
 		page.Content(f, theme)
 	})

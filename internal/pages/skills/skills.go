@@ -23,8 +23,9 @@ const (
 	searchInset = 12
 	// paneWidth is the column's first width; the splitter fits it afterwards.
 	paneWidth = 220
-	// paneMin is the narrowest the column may get.
-	paneMin = 160
+	// paneMin is the narrowest the column may get: wide enough for the buttons
+	// above the search box to sit on one row.
+	paneMin = 196
 )
 
 // choice is the skill the content column shows. A name alone is not enough: two
@@ -85,7 +86,6 @@ type Page struct {
 	modal       *kit.Modal
 	treeView    kit.Tree
 
-	actions   []pages.Action
 	sources   []domain.Source
 	branches  []kit.Branch
 	spec      kit.TreeSpec
@@ -126,15 +126,6 @@ func New(tree *ui.Tree, scope ui.Scope, store domain.Store, invalidator *app.Inv
 		install: tree.ID(scope, "install"),
 		update:  tree.ID(scope, "update"),
 		folder:  tree.ID(scope, "folder"),
-	}
-	// The actions are made once, so a paint does not rebuild their closures.
-	p.actions = []pages.Action{
-		{ID: p.ids.install, Label: "安装", Run: p.openDialog},
-		// Nothing refreshes an installed source yet.
-		{ID: p.ids.update, Label: "更新", Disabled: true, Run: func() {}},
-		// Viva cannot reveal a directory yet, so the button is drawn unclickable
-		// rather than pressed to no effect. See domain.ErrUnsupported.
-		{ID: p.ids.folder, Label: "本地文件夹", Disabled: true, Run: func() { _ = p.store.OpenFolder() }},
 	}
 	p.modal = kit.NewModal(tree, scope, "install")
 	p.pane = pages.Pane{Split: &p.split, Min: paneMin, Draw: p.drawPane}
@@ -200,9 +191,6 @@ func (p *Page) Title() string {
 // Pane is the page's own column: a search box over the tree of sources.
 func (p *Page) Pane() *pages.Pane { return &p.pane }
 
-// Actions are the buttons the toolbar offers.
-func (p *Page) Actions() []pages.Action { return p.actions }
-
 // Fields are the page's text fields: the search box, and the dialog's source.
 func (p *Page) Fields() []*flex.Field { return []*flex.Field{&p.search, &p.repo} }
 
@@ -256,15 +244,30 @@ func (p *Page) Dialog(f *flex.Frame, theme ui.Theme) {
 func (p *Page) drawPane(f *flex.Frame, theme ui.Theme, width float32) {
 	p.filter()
 	f.Column().Width(width).Background(theme.Card).Children(func() {
-		// A strip as tall as the inset around the search box, so the box sits the
-		// same distance from the top as from either side, and the window still
-		// moves from the band above it.
-		f.Row().Height(searchInset).MovesWindow()
+		// The buttons sit in the strip the content toolbar occupies, so the two
+		// columns read as one band. The row is the window's drag region, and the
+		// buttons inside it keep their own presses.
+		f.Row().Height(kit.Titlebar).PadSides(0, searchInset, 0, searchInset).
+			Items(flex.Center).Gap(6).MovesWindow().Children(func() {
+			p.buttons(f)
+		})
 		f.Column().PadSides(0, searchInset, searchInset, searchInset).Children(func() {
 			f.Field(&p.search, p.ids.search, "搜索 Skills", "搜索 skills…").FillWidth()
 		})
 		p.treeView.Draw(f, theme, p.spec)
 	})
+}
+
+// buttons draws what can be done to the library as a whole.
+func (p *Page) buttons(f *flex.Frame) {
+	if f.Button(p.ids.install, "安装").Outline().XSmall().Clicked() {
+		p.openDialog()
+	}
+	// Nothing refreshes an installed source yet.
+	f.Button(p.ids.update, "更新").Outline().XSmall().Disabled(true)
+	// Viva cannot reveal a directory yet, so the button is drawn unclickable
+	// rather than pressed to no effect. See domain.ErrUnsupported.
+	f.Button(p.ids.folder, "本地文件夹").Outline().XSmall().Disabled(true)
 }
 
 // filter keeps the query in step with the search box. The text is read and
