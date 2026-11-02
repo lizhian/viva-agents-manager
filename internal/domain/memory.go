@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"path"
 	"strings"
 	"time"
 )
@@ -58,8 +59,8 @@ func (m *Memory) Install(ctx context.Context, repo string, progress func(Progres
 }
 
 // Document reads one skill's document. The memory store has no files, so it
-// hands back a short one of its own for any skill it holds.
-func (m *Memory) Document(source, skill string) (Document, error) {
+// hands back a short one of its own for any file of any skill it holds.
+func (m *Memory) Document(source, skill, file string) (Document, error) {
 	for _, item := range m.sources {
 		if item.Name != source {
 			continue
@@ -68,10 +69,14 @@ func (m *Memory) Document(source, skill string) (Document, error) {
 			if candidate.Name != skill {
 				continue
 			}
+			name, description := skill, "内存存储里的示例技能。"
+			if file != "SKILL.md" {
+				name, description = path.Base(file), ""
+			}
 			return Document{
-				Name:        skill,
-				Description: "内存存储里的示例技能。",
-				Body:        "# " + skill + "\n\n内存存储没有真实的文档。\n",
+				Name:        name,
+				Description: description,
+				Body:        "# " + name + "\n\n内存存储没有真实的文档。\n",
 			}, nil
 		}
 	}

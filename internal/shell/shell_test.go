@@ -51,7 +51,7 @@ type stubInstaller struct{}
 // stubDeclared is the body of the skill that declares a name and a description.
 func stubDeclared() string {
 	var body strings.Builder
-	body.WriteString("---\nname: Test Skill\ndescription: A skill the tests install.\n---\n\n# Test Skill\n\n")
+	body.WriteString("---\nname: Test Skill\ndescription: A skill the tests install.\n---\n\n# Test Skill\n\nSee [DEEPENING.md](DEEPENING.md).\n\n")
 	for i := 0; i < 60; i++ {
 		fmt.Fprintf(&body, "Paragraph %d of the body.\n\n", i)
 	}
@@ -61,21 +61,30 @@ func stubDeclared() string {
 
 func (stubInstaller) Prepare(ctx context.Context, repo, dir string) ([]domain.PreparedSkill, error) {
 	written := []struct {
-		name string
-		body string
+		name  string
+		files map[string]string
 	}{
-		{"alpha", stubDeclared()},
-		{"long", "---\nname: Long\ndescription: " + strings.Repeat("A description long enough to want more room than the window has. ", 8) + "\n---\n\n# Long\n"},
-		{"tdd", "# tdd\n\nThe plain body.\n"},
+		{"alpha", map[string]string{
+			"SKILL.md":     stubDeclared(),
+			"DEEPENING.md": "# Deeper\n\nA file the skill links to.\n",
+		}},
+		{"long", map[string]string{
+			"SKILL.md": "---\nname: Long\ndescription: " + strings.Repeat("A description long enough to want more room than the window has. ", 8) + "\n---\n\n# Long\n",
+		}},
+		{"tdd", map[string]string{
+			"SKILL.md": "# tdd\n\nThe plain body.\n",
+		}},
 	}
 	prepared := make([]domain.PreparedSkill, 0, len(written))
 	for _, skill := range written {
 		root := filepath.Join(dir, ".agents", "skills", skill.name)
-		if err := os.MkdirAll(root, 0o700); err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte(skill.body), 0o600); err != nil {
-			return nil, err
+		for name, body := range skill.files {
+			if err := os.MkdirAll(root, 0o700); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o600); err != nil {
+				return nil, err
+			}
 		}
 		prepared = append(prepared, domain.PreparedSkill{Name: skill.name, Path: root})
 	}
@@ -161,6 +170,19 @@ func hitBounds(t *testing.T, driver *app.Driver, label string) ui.Rect {
 		}
 	}
 	t.Fatalf("no hit region labelled %q", label)
+	return ui.Rect{}
+}
+
+// horizontalBar is the divider that splits a column in two: the one labelled
+// "Resize panes" that is a strip rather than a full-height line.
+func horizontalBar(t *testing.T, driver *app.Driver) ui.Rect {
+	t.Helper()
+	for _, hit := range driver.Snapshot().Hits {
+		if hit.Label == "Resize panes" && hit.Bounds.Height < 20 {
+			return hit.Bounds
+		}
+	}
+	t.Fatal("no horizontal divider is drawn")
 	return ui.Rect{}
 }
 
@@ -413,6 +435,9 @@ func TestSkillDetailWithoutADeclaration(t *testing.T) {
 	if drawn(t, driver, "A skill the tests install.") {
 		t.Fatal("another skill's description is still drawn")
 	}
+	if drawn(t, driver, "SKILL") {
+		t.Fatal("a document that declares no name fell back to its file name")
+	}
 	if !drawn(t, driver, "The plain body.") {
 		t.Fatal("the chosen skill's body is not drawn")
 	}
@@ -465,5 +490,53 @@ func TestALongDescriptionKeepsTheColumns(t *testing.T) {
 	}
 	if search := hitBounds(t, driver, "搜索 Skills"); search.Width < 150 {
 		t.Fatalf("the page's column is %v wide, so a long description squeezed it", search.Width)
+	}
+}
+
+// TestSkillDetailOpensALinkedDocument checks that a link to another file of the
+// skill opens it under the skill's own document, and that closing puts the
+// document back.
+func TestSkillDetailOpensALinkedDocument(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	if drawn(t, driver, "A file the skill links to.") {
+		t.Fatal("the linked document is on screen before it was opened")
+	}
+	clickLabel(t, driver, "DEEPENING.md")
+	if !drawn(t, driver, "A file the skill links to.") {
+		t.Fatal("the linked document did not open")
+	}
+	clickLabel(t, driver, "关闭")
+	if drawn(t, driver, "A file the skill links to.") {
+		t.Fatal("the preview is still drawn after closing it")
+	}
+	if !drawn(t, driver, "Paragraph 0 of the body.") {
+		t.Fatal("the skill's own document is not back")
+	}
+}
+
+// TestPreviewSplitterDrag drags the divider between the skill's own document and
+// the preview, and checks the preview follows it.
+func TestPreviewSplitterDrag(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+	clickLabel(t, driver, "DEEPENING.md")
+
+	header := hitBounds(t, driver, "关闭")
+	bar := horizontalBar(t, driver)
+	x, y := bar.X+bar.Width/2, bar.Y+bar.Height/2
+	if err := driver.Press(x, y, ui.PointerButtonPrimary); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Move(x, y-60); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Release(x, y-60, ui.PointerButtonPrimary); err != nil {
+		t.Fatal(err)
+	}
+
+	if after := hitBounds(t, driver, "关闭").Y; after >= header.Y {
+		t.Fatalf("the preview did not follow the divider: %v then %v", header.Y, after)
 	}
 }

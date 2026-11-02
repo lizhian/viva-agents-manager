@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/lizhian/viva-agents-manager/internal/domain"
 )
@@ -12,15 +13,21 @@ import (
 // skill's document is documentation, and one this large is not one.
 const maxDocumentSize = 4 << 20
 
-// Document reads one skill's SKILL.md and what it declares about itself.
+// Document reads one file of a skill's directory and what it declares about
+// itself.
 //
 // The names come from the tree, which came from the scan, but they are checked
-// again here: a document is the one place a path is built from two names.
-func (l *Library) Document(source, skill string) (domain.Document, error) {
+// again here: a document is the one place a path is built from names the
+// application did not choose.
+func (l *Library) Document(source, skill, file string) (domain.Document, error) {
 	if !domain.ValidSkillName(source) || !domain.ValidSkillName(skill) {
 		return domain.Document{}, domain.ErrNoDocument
 	}
-	path := filepath.Join(l.config.Root, source, skill, "SKILL.md")
+	dir := filepath.Join(l.config.Root, source, skill)
+	path, ok := inside(dir, file)
+	if !ok {
+		return domain.Document{}, domain.ErrNoDocument
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return domain.Document{}, fmt.Errorf("读取 %s 失败: %w", path, err)
@@ -32,5 +39,30 @@ func (l *Library) Document(source, skill string) (domain.Document, error) {
 	if err != nil {
 		return domain.Document{}, fmt.Errorf("读取 %s 失败: %w", path, err)
 	}
-	return domain.ParseDocument(data, skill), nil
+	// No fallback name: only the caller knows what to call a document that
+	// declares nothing, and "SKILL" is not a name anyone wants to read.
+	return domain.ParseDocument(data, ""), nil
+}
+
+// inside joins file to dir, refusing anything that would leave it, links
+// included.
+func inside(dir, file string) (string, bool) {
+	if file == "" || filepath.IsAbs(file) || strings.HasPrefix(file, "/") {
+		return "", false
+	}
+	path := filepath.Join(dir, filepath.FromSlash(file))
+	if !within(dir, path) {
+		return "", false
+	}
+	// A link inside the skill could point out of it; the copy at install time
+	// refuses those, but a folder someone made by hand has not been copied.
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path, true // missing: the read reports it
+	}
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil || !within(root, resolved) {
+		return "", false
+	}
+	return path, true
 }

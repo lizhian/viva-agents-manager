@@ -5,6 +5,7 @@ package skills
 import (
 	"context"
 	"errors"
+	"path"
 	"strings"
 	"sync"
 
@@ -104,23 +105,17 @@ type Page struct {
 	installErr string
 	cancel     context.CancelFunc
 
-	// The document column: what the chosen skill declares, and the view that
-	// lays its body out and paints it. The view draws to the canvas, so it is
-	// painted in Overlay rather than declared here.
-	document domain.Document
-	docErr   error
-	parsed   markdown.Document
-	view     components.MarkdownView
-	scroll   flex.ScrollState
-	links    ui.Scope
-	// slot is where the document goes, and slotted says Content reserved it this
-	// frame: a Box from an older frame must never be read.
-	slot    flex.Box
-	slotted bool
-	// width is the width the body was last laid out at, and height the height it
-	// came out at.
-	width  float32
-	height float32
+	// The skill's own document, and the preview under it. Both draw to the
+	// canvas, so both are painted in Overlay rather than declared in Content.
+	main    reader
+	preview reader
+	// previewFile is what the preview shows, relative to the skill's directory,
+	// and empty when the preview is closed.
+	previewFile  string
+	previewSplit flex.SplitterState
+	// bodyHeight is how tall the skill's own body was the last time it was
+	// painted with no preview under it, so the preview opens at a fair height.
+	bodyHeight float32
 
 	// mu guards pending, which the install goroutine writes and Wake reads.
 	mu      sync.Mutex
@@ -128,11 +123,13 @@ type Page struct {
 }
 
 type ids struct {
-	search  ui.ID
-	repo    ui.ID
-	install ui.ID
-	update  ui.ID
-	folder  ui.ID
+	search       ui.ID
+	repo         ui.ID
+	install      ui.ID
+	update       ui.ID
+	folder       ui.ID
+	previewSplit ui.ID
+	previewClose ui.ID
 }
 
 // New builds the page in its own identity scope, reading the store once. The
@@ -141,13 +138,16 @@ func New(tree *ui.Tree, scope ui.Scope, store domain.Store, invalidator *app.Inv
 	p := &Page{tree: tree, scope: scope, store: store, invalidator: invalidator}
 	p.split.Pos = paneWidth
 	p.ids = ids{
-		search:  tree.ID(scope, "search"),
-		repo:    tree.ID(scope, "repo"),
-		install: tree.ID(scope, "install"),
-		update:  tree.ID(scope, "update"),
-		folder:  tree.ID(scope, "folder"),
+		search:       tree.ID(scope, "search"),
+		repo:         tree.ID(scope, "repo"),
+		install:      tree.ID(scope, "install"),
+		update:       tree.ID(scope, "update"),
+		folder:       tree.ID(scope, "folder"),
+		previewSplit: tree.ID(scope, "preview-split"),
+		previewClose: tree.ID(scope, "preview-close"),
 	}
-	p.links = tree.Sub(scope, tree.Name("links"))
+	p.main.links = tree.Sub(scope, tree.Name("links"))
+	p.preview.links = tree.Sub(scope, tree.Name("preview-links"))
 	p.modal = kit.NewModal(tree, scope, "install")
 	p.pane = pages.Pane{Split: &p.split, Min: paneMin, Draw: p.drawPane}
 	// The callbacks are made once: they read the page, so they follow a reload
@@ -217,95 +217,217 @@ func (p *Page) Pane() *pages.Pane { return &p.pane }
 // Fields are the page's text fields: the search box, and the dialog's source.
 func (p *Page) Fields() []*flex.Field { return []*flex.Field{&p.search, &p.repo} }
 
-// Content paints what the chosen skill says about itself, and reserves the room
-// its body takes. The body itself is painted in Overlay: the markdown view draws
-// to the canvas, and its rectangle is only known once the page is laid out.
+// Content paints what the chosen skill says about itself and reserves the room
+// the bodies take. The bodies are painted in Overlay: the markdown view draws to
+// the canvas, and its rectangle is only known once the page is laid out.
 func (p *Page) Content(f *flex.Frame, theme ui.Theme) {
-	p.slotted = false
-	f.Column().Grow(1).Pad(28).Gap(14).Children(func() {
+	p.main.slotted = false
+	p.preview.slotted = false
+	f.Column().FillWidth().Grow(1).Pad(28).Gap(14).Children(func() {
 		switch {
-		case p.docErr != nil:
+		case p.main.err != nil:
 			f.Text("读取技能文档失败").FontSize(22).Bold()
-			f.Paragraph(p.docErr.Error(), 3).FontSize(13).Color(theme.Danger)
+			f.Paragraph(p.main.err.Error(), 3).FontSize(13).Color(theme.Danger)
 		case p.chosen.skill == "":
 			f.Text(p.Title()).FontSize(22).Bold()
 			f.Paragraph("从左边选一个技能。", 2).FontSize(13).Muted()
 		default:
-			f.Text(p.document.Name).FontSize(22).Bold()
-			if p.document.Description != "" {
-				f.Paragraph(p.document.Description, 3).FontSize(13).Muted()
+			p.drawDocuments(f, theme)
+		}
+	})
+}
+
+// drawDocuments paints the skill's own document and, when it is open, the
+// preview under it.
+func (p *Page) drawDocuments(f *flex.Frame, theme ui.Theme) {
+	f.Text(p.main.document.Name).FontSize(22).Bold()
+	if p.main.document.Description != "" {
+		f.Paragraph(p.main.document.Description, 3).FontSize(13).Muted()
+	}
+	if p.previewFile == "" {
+		p.main.slot = f.Slot().Grow(1).FillWidth()
+		p.main.slotted = true
+		return
+	}
+	p.main.slot = f.Slot().Height(p.previewSplit.Pos).FillWidth()
+	p.main.slotted = true
+	f.Splitter(p.ids.previewSplit, &p.previewSplit).Mins(previewMin, previewMin)
+	f.Column().Grow(1).FillWidth().Gap(8).Children(func() {
+		f.Row().FillWidth().Items(flex.Center).Gap(8).Children(func() {
+			f.Text(p.preview.document.Name).FontSize(13).Bold().Ellipsis()
+			f.Spacer()
+			if f.Button(p.ids.previewClose, "关闭").Outline().XSmall().Clicked() {
+				p.closePreview()
 			}
-			p.slot = f.Slot().Grow(1).FillWidth()
-			p.slotted = true
+		})
+		if p.preview.err != nil {
+			f.Paragraph(p.preview.err.Error(), 3).FontSize(13).Color(theme.Danger)
+			return
 		}
+		p.preview.slot = f.Slot().Grow(1).FillWidth()
+		p.preview.slotted = true
 	})
 }
 
-// Overlay paints the skill's body into the room Content reserved for it.
+// Overlay paints the documents into the room Content reserved for them.
 func (p *Page) Overlay(canvas *ui.Canvas, theme ui.Theme) {
-	if !p.slotted {
-		return
-	}
-	area := p.slot.Rect()
-	if area.Width <= 0 || area.Height <= 0 {
-		return
-	}
-	p.scroll.Viewport = area.Height
-	// Laying the body out measures its text, which is the expensive half: it is
-	// only worth doing when the width or the document changed.
-	if p.width != area.Width {
-		p.height, p.width = p.view.Layout(canvas, markdownStyle(), &p.parsed, area.Width), area.Width
-	}
-	p.scroll.Content = p.height
-	if p.scroll.Offset > p.scroll.Max() {
-		p.scroll.Offset = p.scroll.Max()
-	}
-	p.view.Paint(canvas, components.MarkdownPaint{
-		Look: components.MarkdownLookFor(theme),
-		X:    area.X, Y: area.Y - p.scroll.Offset,
-		Clip: area, Links: p.links,
-	})
-	if index, ok := canvas.ClickedIn(p.links); ok {
-		if target := p.view.Link(index); target != "" {
-			_ = app.OpenURL(target)
+	if p.main.slotted {
+		p.main.paint(canvas, theme)
+		if p.previewFile == "" {
+			p.bodyHeight = p.main.area.Height
 		}
+	}
+	if p.preview.slotted {
+		p.preview.paint(canvas, theme)
+	}
+	p.followLinks(canvas)
+}
+
+// followLinks opens what a reader's link points at: a file of the skill in the
+// preview, anything else in the browser.
+func (p *Page) followLinks(canvas *ui.Canvas) {
+	for _, r := range []*reader{&p.preview, &p.main} {
+		target, ok := r.clicked(canvas)
+		if !ok {
+			continue
+		}
+		if file, local := domain.LinkTarget(target); local {
+			p.openPreview(file)
+			return
+		}
+		_ = app.OpenURL(target)
+		return
 	}
 }
 
-// Scroll moves the body, and reports whether it moved.
+// Scroll moves the document the pointer is over.
 func (p *Page) Scroll(event ui.ScrollEvent) ui.EventResult {
-	if !p.slotted {
+	if p.preview.slotted && covers(p.preview.area, event.X, event.Y) {
+		return p.preview.scroll.Wheel(event)
+	}
+	if !p.main.slotted {
 		return ui.EventResult{}
 	}
-	return p.scroll.Wheel(event)
+	return p.main.scroll.Wheel(event)
 }
 
-// load reads the chosen skill's document. It runs when the choice changes and
+// load reads the chosen skill's own document. It runs when the choice changes and
 // after the library is reloaded, so a SKILL.md edited by hand shows up on the
 // next click.
 func (p *Page) load() {
-	p.document = domain.Document{}
-	p.docErr = nil
-	p.parsed = markdown.Document{}
-	p.width, p.height = 0, 0
-	p.scroll.Offset = 0
+	p.closePreview()
 	if p.chosen.skill == "" {
+		p.main = reader{links: p.main.links}
 		return
 	}
-	document, err := p.store.Document(p.chosen.source, p.chosen.skill)
-	if err != nil {
-		p.docErr = err
-		return
-	}
-	p.document = document
-	p.parsed.Parse(document.Body)
+	p.main.read(p.store, p.chosen.source, p.chosen.skill, "SKILL.md", p.chosen.skill)
 }
 
-// bodySize is the size a skill's body is set in, and bodyLeading the distance
-// between its lines.
+// openPreview shows a file of the chosen skill under its own document.
+func (p *Page) openPreview(file string) {
+	if file == "" || file == p.previewFile {
+		return
+	}
+	p.previewFile = file
+	p.preview.read(p.store, p.chosen.source, p.chosen.skill, file, path.Base(file))
+	p.previewSplit.Pos = p.mainTop()
+}
+
+// mainTop is how tall the skill's own document stays once the preview opens.
+func (p *Page) mainTop() float32 {
+	if p.bodyHeight <= previewHeight {
+		return previewMin
+	}
+	return p.bodyHeight - previewHeight
+}
+
+// closePreview gives the skill's own document the whole height back.
+func (p *Page) closePreview() {
+	p.previewFile = ""
+	p.preview = reader{links: p.preview.links}
+	p.previewSplit.Pos = 0
+}
+
+// reader is one document column: what it shows, how far it is scrolled, and the
+// view that paints it.
+type reader struct {
+	document domain.Document
+	err      error
+	parsed   markdown.Document
+	view     components.MarkdownView
+	scroll   flex.ScrollState
+	links    ui.Scope
+	// slot is where the body goes, and slotted says Content reserved it this
+	// frame: a Box from an older frame must never be read.
+	slot    flex.Box
+	slotted bool
+	// width is the width the body was last laid out at, height the height it came
+	// out at, and area where it was painted.
+	width  float32
+	height float32
+	area   ui.Rect
+}
+
+// read loads one file of the skill and parses its body.
+func (r *reader) read(store domain.Store, source, skill, file, fallback string) {
+	*r = reader{links: r.links}
+	document, err := store.Document(source, skill, file)
+	if err != nil {
+		r.err = err
+		return
+	}
+	if document.Name == "" {
+		document.Name = fallback
+	}
+	r.document = document
+	r.parsed.Parse(domain.RewriteLinks(document.Body))
+}
+
+// paint draws the body into the room Content reserved for it.
+func (r *reader) paint(canvas *ui.Canvas, theme ui.Theme) {
+	area := r.slot.Rect()
+	if area.Width <= 0 || area.Height <= 0 {
+		return
+	}
+	r.area = area
+	r.scroll.Viewport = area.Height
+	// Laying the body out measures its text, which is the expensive half: it is
+	// only worth doing when the width changed.
+	if r.width != area.Width {
+		r.height, r.width = r.view.Layout(canvas, markdownStyle(), &r.parsed, area.Width), area.Width
+	}
+	r.scroll.Content = r.height
+	if r.scroll.Offset > r.scroll.Max() {
+		r.scroll.Offset = r.scroll.Max()
+	}
+	r.view.Paint(canvas, components.MarkdownPaint{
+		Look: components.MarkdownLookFor(theme),
+		X:    area.X, Y: area.Y - r.scroll.Offset,
+		Clip: area, Links: r.links,
+	})
+}
+
+// clicked is the destination of the link this paint delivered a click on.
+func (r *reader) clicked(canvas *ui.Canvas) (string, bool) {
+	index, ok := canvas.ClickedIn(r.links)
+	if !ok {
+		return "", false
+	}
+	target := r.view.Link(index)
+	return target, target != ""
+}
+
+// covers reports whether the point is inside the rectangle.
+func covers(area ui.Rect, x, y float32) bool {
+	return x >= area.X && x < area.X+area.Width && y >= area.Y && y < area.Y+area.Height
+}
+
+// The sizes the documents are set in, and the room the preview takes.
 const (
-	bodySize    = 13
-	bodyLeading = 19
+	bodySize      = 13
+	bodyLeading   = 19
+	previewHeight = 260
+	previewMin    = 120
 )
 
 // markdownStyle is how a skill's body is typeset.
