@@ -39,6 +39,11 @@ type Shell struct {
 	divider     ui.ID
 	pageDivider ui.ID
 	trailing    float32
+
+	// invalidator wakes the window for work a page finished off the window
+	// thread. It owns no goroutine: an application that never installs anything
+	// pays nothing for it.
+	invalidator app.Invalidator
 }
 
 // New builds the window around the store that holds what it manages.
@@ -50,7 +55,7 @@ func New(store domain.Store) *Shell {
 	_, s.trailing = app.TitlebarInsets()
 
 	s.pages = []pages.Page{
-		skills.New(&s.tree, s.tree.Sub(root, s.tree.Name("skills")), store),
+		skills.New(&s.tree, s.tree.Sub(root, s.tree.Name("skills")), store, &s.invalidator),
 		mcp.New(),
 		agentsmd.New(),
 	}
@@ -77,10 +82,22 @@ func (s *Shell) Config() app.Config {
 	}
 	config.Paint = s.paint
 	config.OnKey = s.onKey
+	// A page's background work publishes its result, then wakes the window; every
+	// page is given the chance to move that result into its state before the
+	// paint that reads it.
+	config.Invalidator = &s.invalidator
+	config.OnWake = s.wake
 	// Every page's fields are handed to the platform at once, so typing reaches
 	// whichever one has focus.
 	config.TextInput = flex.Fields(s.fields()...)
 	return config
+}
+
+// wake gives each page the background work it finished.
+func (s *Shell) wake() {
+	for _, page := range s.pages {
+		page.Wake()
+	}
 }
 
 // page is the selected page.
@@ -137,7 +154,8 @@ func (s *Shell) content(f *flex.Frame, theme ui.Theme) {
 			f.Text(page.Title()).FontSize(12).Muted().Ellipsis()
 			f.Spacer()
 			for _, action := range page.Actions() {
-				if f.Button(action.ID, action.Label).Outline().XSmall().Clicked() {
+				button := f.Button(action.ID, action.Label).Outline().XSmall()
+				if button.Disabled(action.Disabled).Clicked() {
 					action.Run()
 				}
 			}

@@ -25,6 +25,9 @@ type Page interface {
 	Content(f *flex.Frame, theme ui.Theme)
 	// Dialog paints the page's modal over the window, if it has one open.
 	Dialog(f *flex.Frame, theme ui.Theme)
+	// Wake runs on the window thread before a repaint that background work asked
+	// for, and is where a page moves what that work published into its own state.
+	Wake()
 }
 
 // Pane is a page's own column beside the content. The page owns the width, the
@@ -40,7 +43,10 @@ type Pane struct {
 type Action struct {
 	ID    ui.ID
 	Label string
-	Run   func()
+	// Disabled draws the button unclickable: for what the page cannot do yet, so
+	// pressing it is not a press that does nothing.
+	Disabled bool
+	Run      func()
 }
 
 // Base answers for the parts a page does not have, so a page declares only what
@@ -58,6 +64,9 @@ func (Base) Fields() []*flex.Field { return nil }
 
 // Dialog reports that the page has no modal.
 func (Base) Dialog(*flex.Frame, ui.Theme) {}
+
+// Wake reports that the page has no background work to apply.
+func (Base) Wake() {}
 
 // Placeholder is the body a page shows before it has anything to show: a title,
 // one line of explanation and an empty card where the content will go.
