@@ -145,7 +145,10 @@ func (s *Shell) declare(f *flex.Frame, theme ui.Theme) {
 				return
 			}
 			f.Splitter(s.divider, &s.split).Mins(s.natural, pane.Min)
-			f.Row().Grow(1).Children(func() {
+			// FillWidth for the same reason as the content column below: the row's
+			// preferred width is the sum of its children's, and the page's column
+			// would otherwise claim the room the navigation needs.
+			f.Row().FillWidth().Grow(1).Children(func() {
 				pane.Draw(f, theme, pane.Split.Pos)
 				f.Splitter(s.pageDivider, pane.Split).Mins(pane.Min, contentMinBeside)
 				s.content(f, theme)
@@ -158,7 +161,10 @@ func (s *Shell) declare(f *flex.Frame, theme ui.Theme) {
 // content paints the toolbar and the body of the selected page.
 func (s *Shell) content(f *flex.Frame, theme ui.Theme) {
 	page := s.page()
-	f.Column().Grow(1).Children(func() {
+	// FillWidth, not Grow alone: a column's preferred width is the sum of its
+	// children's, and one long paragraph would make that wider than the window and
+	// shrink the navigation and the page's column to make room for it.
+	f.Column().FillWidth().Grow(1).Children(func() {
 		// The strip is the window's drag region, and it carries the one label that
 		// says which skill the body below is about.
 		f.Row().Height(kit.Titlebar).PadSides(0, 16+s.trailing, 0, 16).

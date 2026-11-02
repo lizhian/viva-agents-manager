@@ -65,6 +65,7 @@ func (stubInstaller) Prepare(ctx context.Context, repo, dir string) ([]domain.Pr
 		body string
 	}{
 		{"alpha", stubDeclared()},
+		{"long", "---\nname: Long\ndescription: " + strings.Repeat("A description long enough to want more room than the window has. ", 8) + "\n---\n\n# Long\n"},
 		{"tdd", "# tdd\n\nThe plain body.\n"},
 	}
 	prepared := make([]domain.PreparedSkill, 0, len(written))
@@ -447,5 +448,22 @@ func TestSkillDetailReportsAReadFailure(t *testing.T) {
 	clickLabel(t, driver, "alpha")
 	if !drawn(t, driver, "读取技能文档失败") {
 		t.Fatal("a document that cannot be read is not reported")
+	}
+}
+
+// TestALongDescriptionKeepsTheColumns checks that a skill whose description is
+// wider than the window cannot squeeze the navigation or the page's column: a
+// flex column's preferred width is the sum of its children's, so the columns
+// that must keep their width have to be filled rather than grown.
+func TestALongDescriptionKeepsTheColumns(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	clickLabel(t, driver, "long")
+	if nav := hitBounds(t, driver, "Skills"); nav.Width < 80 {
+		t.Fatalf("the navigation is %v wide, so a long description squeezed it", nav.Width)
+	}
+	if search := hitBounds(t, driver, "搜索 Skills"); search.Width < 150 {
+		t.Fatalf("the page's column is %v wide, so a long description squeezed it", search.Width)
 	}
 }
