@@ -76,7 +76,7 @@ func New(config Config) (*Library, error) {
 	}
 	library := &Library{config: config}
 	library.clearTmp()
-	library.clearStaging()
+	library.clearLeftovers()
 	db, err := openIndex(config.DBPath)
 	if err != nil {
 		// The index is derived, so losing it costs a slower listing, not data.
@@ -131,20 +131,23 @@ func (l *Library) clearTmp() {
 	}
 }
 
-// clearStaging removes a migration that was interrupted between the copy and the
-// rename. The scan ignores these folders, so without this one would sit in the
-// library for good.
-func (l *Library) clearStaging() {
+// clearLeftovers removes what an install or an update was holding when the
+// application quit: a staging folder, the copy it was building, and the previous
+// version a swap had moved aside. The scan ignores them, so without this they
+// would sit in the library for good.
+func (l *Library) clearLeftovers() {
 	entries, err := os.ReadDir(l.config.Root)
 	if err != nil {
 		return
 	}
 	for _, entry := range entries {
-		if !strings.HasPrefix(entry.Name(), ".staging-") {
+		name := entry.Name()
+		if !strings.HasPrefix(name, ".staging-") && !strings.HasPrefix(name, ".update-") &&
+			!strings.HasPrefix(name, ".previous-") {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(l.config.Root, entry.Name())); err != nil {
-			log.Printf("library: 清理暂存目录失败: %v", err)
+		if err := os.RemoveAll(filepath.Join(l.config.Root, name)); err != nil {
+			log.Printf("library: 清理 %s 失败: %v", name, err)
 		}
 	}
 }

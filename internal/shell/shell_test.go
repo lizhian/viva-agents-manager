@@ -540,3 +540,64 @@ func TestPreviewSplitterDrag(t *testing.T) {
 		t.Fatalf("the preview did not follow the divider: %v then %v", header.Y, after)
 	}
 }
+
+// slowInstaller waits for the context instead of answering, so a test can watch
+// an update that is still running.
+type slowInstaller struct{}
+
+func (slowInstaller) Prepare(ctx context.Context, repo, dir string) ([]domain.PreparedSkill, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// newSeededWindow builds the window over a library that already holds one source,
+// written by hand, so a test needs no install to get something to update.
+func newSeededWindow(t *testing.T, installer domain.Installer) (*Shell, *app.Driver) {
+	t.Helper()
+	dir := t.TempDir()
+	root := filepath.Join(dir, "skills")
+	skill := filepath.Join(root, "owner_@_repo", "alpha")
+	if err := os.MkdirAll(skill, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("# alpha\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := library.New(library.Config{
+		Root:      root,
+		Tmp:       filepath.Join(dir, ".tmp"),
+		DBPath:    filepath.Join(dir, "sqlite.db"),
+		Installer: installer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return newWindowWith(t, store)
+}
+
+// TestUpdateReportsItsResult clicks update and checks the status line says what
+// happened.
+func TestUpdateReportsItsResult(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	clickLabel(t, driver, "更新")
+	settle(t, driver, func() bool { return drawn(t, driver, "1 个来源已更新") })
+}
+
+// TestUpdateCanBeCancelled checks that an update in flight offers to stop, and
+// that stopping says so.
+func TestUpdateCanBeCancelled(t *testing.T) {
+	_, driver := newSeededWindow(t, slowInstaller{})
+
+	clickLabel(t, driver, "更新")
+	// Wait for the source to be in flight: stopping before it starts is a
+	// different path, and one this test is not about.
+	settle(t, driver, func() bool { return drawn(t, driver, "正在更新 1/1 · owner/repo") })
+	if !drawn(t, driver, "取消") {
+		t.Fatal("an update in flight does not offer to stop")
+	}
+	clickLabel(t, driver, "取消")
+	settle(t, driver, func() bool { return drawn(t, driver, "已取消，0 个来源已更新") })
+}

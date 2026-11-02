@@ -58,6 +58,25 @@ func (m *Memory) Install(ctx context.Context, repo string, progress func(Progres
 	return nil
 }
 
+// UpdateAll reports a successful update for each source that has a repository.
+// The memory store fetches nothing, so nothing about it changes.
+func (m *Memory) UpdateAll(ctx context.Context, progress func(UpdateProgress)) []UpdateResult {
+	var repos []string
+	for _, source := range m.sources {
+		if source.Repo != "" {
+			repos = append(repos, source.Repo)
+		}
+	}
+	results := make([]UpdateResult, 0, len(repos))
+	for i, repo := range repos {
+		if progress != nil {
+			progress(UpdateProgress{Source: repo, Done: i, Total: len(repos), Stage: ProgressPreparing})
+		}
+		results = append(results, UpdateResult{Source: repo})
+	}
+	return results
+}
+
 // Document reads one skill's document. The memory store has no files, so it
 // hands back a short one of its own for any file of any skill it holds.
 func (m *Memory) Document(source, skill, file string) (Document, error) {

@@ -15,6 +15,23 @@ const (
 	ProgressDone
 )
 
+// UpdateProgress is how far updating the library has got.
+type UpdateProgress struct {
+	// Source is the repository being fetched.
+	Source string
+	// Done is how many sources are finished, Total how many there are.
+	Done, Total int
+	// Stage is what the source in flight is doing.
+	Stage Progress
+}
+
+// UpdateResult is what updating one source did. A source that could not be
+// updated keeps what it had.
+type UpdateResult struct {
+	Source string
+	Err    error
+}
+
 // Store is what the application needs from wherever skills live: the local
 // library, and the repositories it was installed from. The interface exists so
 // the interface never learns how a source is fetched.
@@ -26,6 +43,12 @@ type Store interface {
 	// network does, so the caller runs it off the window thread and cancels it
 	// through ctx.
 	Install(ctx context.Context, repo string, progress func(Progress)) error
+	// UpdateAll fetches every source that has a repository again and replaces what
+	// the library holds with it, so the two match: a skill the repository no
+	// longer has is gone afterwards. A source that fails keeps what it had and the
+	// rest still update. It blocks, so the caller runs it off the window thread and
+	// cancels it through ctx.
+	UpdateAll(ctx context.Context, progress func(UpdateProgress)) []UpdateResult
 	// Document reads one file of a skill's directory: what it declares about
 	// itself, and its body. The skill's own document is "SKILL.md".
 	Document(source, skill, file string) (Document, error)

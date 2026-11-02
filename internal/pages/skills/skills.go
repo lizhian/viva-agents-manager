@@ -5,6 +5,7 @@ package skills
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path"
 	"strings"
 	"sync"
@@ -64,6 +65,16 @@ func firstChoice(sources []domain.Source) choice {
 	return choice{}
 }
 
+// pendingUpdate is what an update goroutine published for the window thread to
+// apply.
+type pendingUpdate struct {
+	// started is false when nothing was published.
+	started  bool
+	progress domain.UpdateProgress
+	done     bool
+	results  []domain.UpdateResult
+}
+
 // pending is what an install goroutine published for the window thread to apply.
 type pending struct {
 	// started is false when nothing was published, so a wake asked for by another
@@ -117,9 +128,18 @@ type Page struct {
 	// painted with no preview under it, so the preview opens at a fair height.
 	bodyHeight float32
 
-	// mu guards pending, which the install goroutine writes and Wake reads.
-	mu      sync.Mutex
-	pending pending
+	// updating is true from the press that starts an update until its results
+	// have been applied; updateCancel stops the one in flight.
+	updating        bool
+	updateStatus    string
+	updateFailed    bool
+	updateCancelled bool
+	updateCancel    context.CancelFunc
+
+	// mu guards what the goroutines write and Wake reads.
+	mu            sync.Mutex
+	pending       pending
+	pendingUpdate pendingUpdate
 }
 
 type ids struct {
@@ -483,6 +503,15 @@ func (p *Page) drawPane(f *flex.Frame, theme ui.Theme, width float32) {
 			Items(flex.Center).Gap(6).MovesWindow().Children(func() {
 			p.buttons(f)
 		})
+		if p.updateStatus != "" {
+			color := theme.MutedForeground
+			if p.updateFailed {
+				color = theme.Danger
+			}
+			f.Column().PadSides(2, searchInset, 2, searchInset).Children(func() {
+				f.Paragraph(p.updateStatus, 2).FontSize(11).Color(color)
+			})
+		}
 		f.Column().PadSides(0, searchInset, searchInset, searchInset).Children(func() {
 			f.Field(&p.search, p.ids.search, "搜索 Skills", "搜索 skills…").FillWidth()
 		})
@@ -492,11 +521,22 @@ func (p *Page) drawPane(f *flex.Frame, theme ui.Theme, width float32) {
 
 // buttons draws what can be done to the library as a whole.
 func (p *Page) buttons(f *flex.Frame) {
-	if f.Button(p.ids.install, "安装").Outline().XSmall().Clicked() {
+	if f.Button(p.ids.install, "安装").Outline().XSmall().Disabled(p.updating).Clicked() {
 		p.openDialog()
 	}
-	// Nothing refreshes an installed source yet.
-	f.Button(p.ids.update, "更新").Outline().XSmall().Disabled(true)
+	// While the library updates, the same button stops it: a run that takes half a
+	// minute needs a way out.
+	label := "更新"
+	if p.updating {
+		label = "取消"
+	}
+	if f.Button(p.ids.update, label).Outline().XSmall().Disabled(p.installing).Clicked() {
+		if p.updating {
+			p.cancelUpdate()
+		} else {
+			p.startUpdate()
+		}
+	}
 	// Viva cannot reveal a directory yet, so the button is drawn unclickable
 	// rather than pressed to no effect. See domain.ErrUnsupported.
 	f.Button(p.ids.folder, "本地文件夹").Outline().XSmall().Disabled(true)
@@ -535,6 +575,7 @@ func (p *Page) toggleBranch(branch int) {
 // openDialog shows the dialog with a clean slate.
 func (p *Page) openDialog() {
 	p.installErr = ""
+	p.updateStatus = ""
 	p.modal.Open = true
 }
 
@@ -583,8 +624,106 @@ func (p *Page) cancelInstall() {
 	}
 }
 
-// Wake applies whatever the install goroutine published.
+// startUpdate fetches every source again off the window thread. It reports back
+// through Wake like an install does.
+func (p *Page) startUpdate() {
+	ctx, cancel := context.WithCancel(context.Background())
+	p.updateCancel = cancel
+	p.updating = true
+	p.updateFailed = false
+	p.updateCancelled = false
+	p.updateStatus = "正在更新…"
+	go func() {
+		results := p.store.UpdateAll(ctx, func(progress domain.UpdateProgress) {
+			p.publishUpdate(pendingUpdate{started: true, progress: progress})
+		})
+		p.publishUpdate(pendingUpdate{started: true, done: true, results: results})
+	}()
+}
+
+// publishUpdate hands a result to the window thread and asks for the repaint
+// that applies it.
+func (p *Page) publishUpdate(result pendingUpdate) {
+	p.mu.Lock()
+	p.pendingUpdate = result
+	p.mu.Unlock()
+	if p.invalidator != nil {
+		p.invalidator.Invalidate()
+	}
+}
+
+// cancelUpdate asks the update in flight to stop. The sources it already
+// replaced stay replaced.
+func (p *Page) cancelUpdate() {
+	p.updateCancelled = true
+	if p.updateCancel != nil {
+		p.updateCancel()
+	}
+}
+
+// wakeUpdate applies what the update goroutine published.
+func (p *Page) wakeUpdate() {
+	p.mu.Lock()
+	result := p.pendingUpdate
+	p.pendingUpdate = pendingUpdate{}
+	p.mu.Unlock()
+	if !result.started {
+		return
+	}
+	if !result.done {
+		p.updateStatus = updateProgressLabel(result.progress)
+		return
+	}
+	p.updating = false
+	p.updateCancel = nil
+	p.updateStatus, p.updateFailed = updateResultLabel(result.results, p.updateCancelled)
+	p.reload()
+}
+
+// updateProgressLabel is what the status line says while the library updates.
+func updateProgressLabel(progress domain.UpdateProgress) string {
+	return fmt.Sprintf("正在更新 %d/%d · %s", progress.Done+1, progress.Total, progress.Source)
+}
+
+// updateResultLabel is what the status line says once the update is over, and
+// whether it is bad news.
+func updateResultLabel(results []domain.UpdateResult, cancelled bool) (string, bool) {
+	if len(results) == 0 {
+		if cancelled {
+			return "已取消", false
+		}
+		return "没有可更新的来源", false
+	}
+	failed := 0
+	var first domain.UpdateResult
+	for _, result := range results {
+		if result.Err == nil {
+			continue
+		}
+		if failed == 0 {
+			first = result
+		}
+		failed++
+	}
+	switch {
+	case failed == 0:
+		return fmt.Sprintf("%d 个来源已更新", len(results)), false
+	case cancelled || errors.Is(first.Err, context.Canceled):
+		return fmt.Sprintf("已取消，%d 个来源已更新", len(results)-failed), false
+	default:
+		message := fmt.Sprintf("%s — %s", first.Source, failureMessage(first.Err))
+		return fmt.Sprintf("%d 个来源已更新，%d 个失败：%s", len(results)-failed, failed, message), true
+	}
+}
+
+// Wake applies whatever the background work published.
 func (p *Page) Wake() {
+	p.wakeInstall()
+	p.wakeUpdate()
+}
+
+// wakeInstall applies what the install goroutine published.
+func (p *Page) wakeInstall() {
 	p.mu.Lock()
 	result := p.pending
 	p.pending = pending{}
@@ -603,7 +742,7 @@ func (p *Page) Wake() {
 		// The reader stopped it; there is nothing to report.
 		p.modal.Open = false
 	case result.err != nil:
-		p.installErr = installMessage(result.err)
+		p.installErr = failureMessage(result.err)
 	default:
 		p.modal.Open = false
 		p.repo.SetText("")
@@ -623,9 +762,9 @@ func progressLabel(progress domain.Progress) string {
 	}
 }
 
-// installMessage turns a failed install into the sentence the dialog shows. The
-// copy lives here, not in the domain, so the model stays free of it.
-func installMessage(err error) string {
+// failureMessage turns a failed install or update into the sentence the reader
+// sees. The copy lives here, not in the domain, so the model stays free of it.
+func failureMessage(err error) string {
 	switch {
 	case errors.Is(err, domain.ErrEmptyRepo):
 		return "请填写仓库"
