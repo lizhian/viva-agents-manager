@@ -12,8 +12,6 @@ import (
 type Page interface {
 	// Name is the navigation label.
 	Name() string
-	// Title is what the content toolbar shows.
-	Title() string
 	// Pane is the page's own column beside the content, or nil.
 	Pane() *Pane
 	// Fields are the page's text fields, which the shell hands to the platform so

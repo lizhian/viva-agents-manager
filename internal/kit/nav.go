@@ -10,6 +10,11 @@ import (
 // no title bar at all.
 const Titlebar = 38
 
+// DragStrip is the band the window is dragged from where a column has no header
+// of its own: as tall as the inset around the page's search box, so the two
+// columns below it start at the same height.
+const DragStrip = 12
+
 // SplitterWidth is the strip a Splitter reserves: it draws its one-pixel line
 // down the middle of that strip, so a pane's colour has to reach the middle for
 // the line to sit on the boundary between two panes.

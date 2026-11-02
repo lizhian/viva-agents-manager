@@ -158,20 +158,17 @@ func (s *Shell) declare(f *flex.Frame, theme ui.Theme) {
 	}
 }
 
-// content paints the toolbar and the body of the selected page.
+// content paints the body of the selected page.
 func (s *Shell) content(f *flex.Frame, theme ui.Theme) {
-	page := s.page()
 	// FillWidth, not Grow alone: a column's preferred width is the sum of its
 	// children's, and one long paragraph would make that wider than the window and
 	// shrink the navigation and the page's column to make room for it.
 	f.Column().FillWidth().Grow(1).Children(func() {
-		// The strip is the window's drag region, and it carries the one label that
-		// says which skill the body below is about.
-		f.Row().Height(kit.Titlebar).PadSides(0, 16+s.trailing, 0, 16).
-			Items(flex.Center).MovesWindow().Children(func() {
-			f.Text(page.Title()).FontSize(12).Muted().Ellipsis()
-		})
-		page.Content(f, theme)
+		// The page names itself in its own body, so this column has no header; the
+		// strip stays as the place the window is dragged from, and is as tall as
+		// the gap above the page's search box so the two columns start level.
+		f.Row().Height(kit.DragStrip).PadSides(0, 16+s.trailing, 0, 16).MovesWindow()
+		s.page().Content(f, theme)
 	})
 }
 
