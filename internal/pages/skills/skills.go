@@ -9,7 +9,9 @@ import (
 	"sync"
 
 	"github.com/vivaui/viva/app"
+	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/flex"
+	"github.com/vivaui/viva/markdown"
 	"github.com/vivaui/viva/ui"
 
 	"github.com/lizhian/viva-agents-manager/internal/domain"
@@ -102,6 +104,24 @@ type Page struct {
 	installErr string
 	cancel     context.CancelFunc
 
+	// The document column: what the chosen skill declares, and the view that
+	// lays its body out and paints it. The view draws to the canvas, so it is
+	// painted in Overlay rather than declared here.
+	document domain.Document
+	docErr   error
+	parsed   markdown.Document
+	view     components.MarkdownView
+	scroll   flex.ScrollState
+	links    ui.Scope
+	// slot is where the document goes, and slotted says Content reserved it this
+	// frame: a Box from an older frame must never be read.
+	slot    flex.Box
+	slotted bool
+	// width is the width the body was last laid out at, and height the height it
+	// came out at.
+	width  float32
+	height float32
+
 	// mu guards pending, which the install goroutine writes and Wake reads.
 	mu      sync.Mutex
 	pending pending
@@ -127,6 +147,7 @@ func New(tree *ui.Tree, scope ui.Scope, store domain.Store, invalidator *app.Inv
 		update:  tree.ID(scope, "update"),
 		folder:  tree.ID(scope, "folder"),
 	}
+	p.links = tree.Sub(scope, tree.Name("links"))
 	p.modal = kit.NewModal(tree, scope, "install")
 	p.pane = pages.Pane{Split: &p.split, Min: paneMin, Draw: p.drawPane}
 	// The callbacks are made once: they read the page, so they follow a reload
@@ -141,6 +162,7 @@ func New(tree *ui.Tree, scope ui.Scope, store domain.Store, invalidator *app.Inv
 		},
 		OnChoose: func(branch, leaf int) {
 			p.chosen = choice{source: p.sources[branch].Name, skill: p.sources[branch].Skills[leaf].Name}
+			p.load()
 		},
 	}
 	p.reload()
@@ -175,6 +197,7 @@ func (p *Page) reload() {
 	if !p.chosen.exists(p.sources) {
 		p.chosen = firstChoice(p.sources)
 	}
+	p.load()
 }
 
 // Name is the navigation label.
@@ -194,13 +217,100 @@ func (p *Page) Pane() *pages.Pane { return &p.pane }
 // Fields are the page's text fields: the search box, and the dialog's source.
 func (p *Page) Fields() []*flex.Field { return []*flex.Field{&p.search, &p.repo} }
 
-// Content paints the selected skill in the content column.
+// Content paints what the chosen skill says about itself, and reserves the room
+// its body takes. The body itself is painted in Overlay: the markdown view draws
+// to the canvas, and its rectangle is only known once the page is laid out.
 func (p *Page) Content(f *flex.Frame, theme ui.Theme) {
+	p.slotted = false
 	f.Column().Grow(1).Pad(28).Gap(14).Children(func() {
-		f.Text(p.Title()).FontSize(22).Bold()
-		f.Paragraph("拖动中间的分栏线调整宽度，顶部空白处可以拖动窗口。", 2).FontSize(13).Muted()
-		f.Column().Grow(1).Radius(10).Background(theme.Card).Border(1, theme.Border)
+		switch {
+		case p.docErr != nil:
+			f.Text("读取技能文档失败").FontSize(22).Bold()
+			f.Paragraph(p.docErr.Error(), 3).FontSize(13).Color(theme.Danger)
+		case p.chosen.skill == "":
+			f.Text(p.Title()).FontSize(22).Bold()
+			f.Paragraph("从左边选一个技能。", 2).FontSize(13).Muted()
+		default:
+			f.Text(p.document.Name).FontSize(22).Bold()
+			if p.document.Description != "" {
+				f.Paragraph(p.document.Description, 3).FontSize(13).Muted()
+			}
+			p.slot = f.Slot().Grow(1).FillWidth()
+			p.slotted = true
+		}
 	})
+}
+
+// Overlay paints the skill's body into the room Content reserved for it.
+func (p *Page) Overlay(canvas *ui.Canvas, theme ui.Theme) {
+	if !p.slotted {
+		return
+	}
+	area := p.slot.Rect()
+	if area.Width <= 0 || area.Height <= 0 {
+		return
+	}
+	p.scroll.Viewport = area.Height
+	// Laying the body out measures its text, which is the expensive half: it is
+	// only worth doing when the width or the document changed.
+	if p.width != area.Width {
+		p.height, p.width = p.view.Layout(canvas, markdownStyle(), &p.parsed, area.Width), area.Width
+	}
+	p.scroll.Content = p.height
+	if p.scroll.Offset > p.scroll.Max() {
+		p.scroll.Offset = p.scroll.Max()
+	}
+	p.view.Paint(canvas, components.MarkdownPaint{
+		Look: components.MarkdownLookFor(theme),
+		X:    area.X, Y: area.Y - p.scroll.Offset,
+		Clip: area, Links: p.links,
+	})
+	if index, ok := canvas.ClickedIn(p.links); ok {
+		if target := p.view.Link(index); target != "" {
+			_ = app.OpenURL(target)
+		}
+	}
+}
+
+// Scroll moves the body, and reports whether it moved.
+func (p *Page) Scroll(event ui.ScrollEvent) ui.EventResult {
+	if !p.slotted {
+		return ui.EventResult{}
+	}
+	return p.scroll.Wheel(event)
+}
+
+// load reads the chosen skill's document. It runs when the choice changes and
+// after the library is reloaded, so a SKILL.md edited by hand shows up on the
+// next click.
+func (p *Page) load() {
+	p.document = domain.Document{}
+	p.docErr = nil
+	p.parsed = markdown.Document{}
+	p.width, p.height = 0, 0
+	p.scroll.Offset = 0
+	if p.chosen.skill == "" {
+		return
+	}
+	document, err := p.store.Document(p.chosen.source, p.chosen.skill)
+	if err != nil {
+		p.docErr = err
+		return
+	}
+	p.document = document
+	p.parsed.Parse(document.Body)
+}
+
+// bodySize is the size a skill's body is set in, and bodyLeading the distance
+// between its lines.
+const (
+	bodySize    = 13
+	bodyLeading = 19
+)
+
+// markdownStyle is how a skill's body is typeset.
+func markdownStyle() components.MarkdownStyle {
+	return components.MarkdownStyle{Size: bodySize, LineHeight: bodyLeading}
 }
 
 // Dialog paints the install dialog while it is open. An install runs for as long

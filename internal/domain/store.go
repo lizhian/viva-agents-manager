@@ -26,6 +26,9 @@ type Store interface {
 	// network does, so the caller runs it off the window thread and cancels it
 	// through ctx.
 	Install(ctx context.Context, repo string, progress func(Progress)) error
+	// Document reads one skill's SKILL.md: what it declares about itself, and its
+	// body.
+	Document(source, skill string) (Document, error)
 	// OpenFolder asks the desktop to show where skills live.
 	OpenFolder() error
 }

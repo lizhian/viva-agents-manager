@@ -19,3 +19,7 @@ _Avoid_: slug、编码名、转义名
 **安装 (Install)**：
 把一个技能来源的技能取到临时目录，再迁移进本地技能目录的动作。安装是来源级的，不是技能级的。
 _Avoid_: 下载、同步、拉取、导入
+
+**技能文档 (Skill document)**：
+一个技能自带的 `SKILL.md`：开头是可选的声明块（`name`、`description`），后面是正文。详情页显示的就是它。
+_Avoid_: README、说明文件、detail

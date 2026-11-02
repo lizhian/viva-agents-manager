@@ -57,5 +57,26 @@ func (m *Memory) Install(ctx context.Context, repo string, progress func(Progres
 	return nil
 }
 
+// Document reads one skill's document. The memory store has no files, so it
+// hands back a short one of its own for any skill it holds.
+func (m *Memory) Document(source, skill string) (Document, error) {
+	for _, item := range m.sources {
+		if item.Name != source {
+			continue
+		}
+		for _, candidate := range item.Skills {
+			if candidate.Name != skill {
+				continue
+			}
+			return Document{
+				Name:        skill,
+				Description: "内存存储里的示例技能。",
+				Body:        "# " + skill + "\n\n内存存储没有真实的文档。\n",
+			}, nil
+		}
+	}
+	return Document{}, ErrNoDocument
+}
+
 // OpenFolder reports that this store has no folder to show.
 func (m *Memory) OpenFolder() error { return ErrUnsupported }

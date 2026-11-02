@@ -2,8 +2,10 @@ package shell
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,23 +44,47 @@ type emptyStore struct{ *domain.Memory }
 func (emptyStore) Sources() []domain.Source { return nil }
 
 // stubInstaller fetches a repository the way the skills CLI would, without a
-// network: one skill in a folder of its own.
+// network: two skills, one of which declares itself and is long enough to need
+// scrolling.
 type stubInstaller struct{}
 
+// stubDeclared is the body of the skill that declares a name and a description.
+func stubDeclared() string {
+	var body strings.Builder
+	body.WriteString("---\nname: Test Skill\ndescription: A skill the tests install.\n---\n\n# Test Skill\n\n")
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&body, "Paragraph %d of the body.\n\n", i)
+	}
+	body.WriteString("## The last heading\n")
+	return body.String()
+}
+
 func (stubInstaller) Prepare(ctx context.Context, repo, dir string) ([]domain.PreparedSkill, error) {
-	root := filepath.Join(dir, ".agents", "skills", "tdd")
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return nil, err
+	written := []struct {
+		name string
+		body string
+	}{
+		{"alpha", stubDeclared()},
+		{"tdd", "# tdd\n\nThe plain body.\n"},
 	}
-	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("# tdd"), 0o600); err != nil {
-		return nil, err
+	prepared := make([]domain.PreparedSkill, 0, len(written))
+	for _, skill := range written {
+		root := filepath.Join(dir, ".agents", "skills", skill.name)
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte(skill.body), 0o600); err != nil {
+			return nil, err
+		}
+		prepared = append(prepared, domain.PreparedSkill{Name: skill.name, Path: root})
 	}
-	return []domain.PreparedSkill{{Name: "tdd", Path: root}}, nil
+	return prepared, nil
 }
 
 // newLibraryWindow builds the window over a real library in a throwaway folder,
-// so a test drives the same install path the application does.
-func newLibraryWindow(t *testing.T) (*Shell, *app.Driver) {
+// so a test drives the same install path the application does. It returns the
+// library's root, for tests that reach into the files.
+func newLibraryWindow(t *testing.T) (*Shell, *app.Driver, string) {
 	t.Helper()
 	dir := t.TempDir()
 	store, err := library.New(library.Config{
@@ -71,7 +97,8 @@ func newLibraryWindow(t *testing.T) (*Shell, *app.Driver) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	return newWindowWith(t, store)
+	window, driver := newWindowWith(t, store)
+	return window, driver, filepath.Join(dir, "skills")
 }
 
 // settle pumps the driver until the window has applied what a background
@@ -276,7 +303,7 @@ func TestInstallDialog(t *testing.T) {
 // off the window thread, the dialog closes when its result is applied, and the
 // source and its skill are in the tree.
 func TestInstallFromTheDialog(t *testing.T) {
-	_, driver := newLibraryWindow(t)
+	_, driver, _ := newLibraryWindow(t)
 
 	clickLabel(t, driver, "安装")
 	clickLabel(t, driver, "GitHub 仓库")
@@ -296,7 +323,7 @@ func TestInstallFromTheDialog(t *testing.T) {
 // TestInstallReportsAConflict installs the same repository twice: the second
 // attempt keeps the dialog open and says why.
 func TestInstallReportsAConflict(t *testing.T) {
-	_, driver := newLibraryWindow(t)
+	_, driver, _ := newLibraryWindow(t)
 
 	for attempt := 0; attempt < 2; attempt++ {
 		clickLabel(t, driver, "安装")
@@ -346,5 +373,79 @@ func TestPaneButtonsSitAboveTheSearchBox(t *testing.T) {
 		if hit.X+hit.Width > right {
 			t.Fatalf("%q ends at %v, past the column's edge at %v", label, hit.X+hit.Width, right)
 		}
+	}
+}
+
+// installStub drives the dialog to install the stub repository, and waits for
+// the window to apply the result.
+func installStub(t *testing.T, driver *app.Driver) {
+	t.Helper()
+	clickLabel(t, driver, "安装")
+	clickLabel(t, driver, "GitHub 仓库")
+	if err := driver.Type("owner/repo"); err != nil {
+		t.Fatal(err)
+	}
+	clickLabel(t, driver, "开始安装")
+	settle(t, driver, func() bool { return !drawn(t, driver, "安装 Skill 来源") })
+}
+
+// TestSkillDetailShowsTheDocument checks the detail column: what the document
+// declares about itself, and its body.
+func TestSkillDetailShowsTheDocument(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	for _, want := range []string{"Test Skill", "A skill the tests install.", "Paragraph 0 of the body."} {
+		if !drawn(t, driver, want) {
+			t.Fatalf("%q is not drawn in the detail column", want)
+		}
+	}
+}
+
+// TestSkillDetailWithoutADeclaration checks that a document that declares
+// nothing falls back to its directory name, and shows no subtitle.
+func TestSkillDetailWithoutADeclaration(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	clickLabel(t, driver, "tdd")
+	if drawn(t, driver, "A skill the tests install.") {
+		t.Fatal("another skill's description is still drawn")
+	}
+	if !drawn(t, driver, "The plain body.") {
+		t.Fatal("the chosen skill's body is not drawn")
+	}
+}
+
+// TestSkillDetailScrolls checks that a body taller than the column moves with
+// the wheel.
+func TestSkillDetailScrolls(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	if drawn(t, driver, "The last heading") {
+		t.Fatal("the end of the body is on screen before scrolling")
+	}
+	if err := driver.Scroll(ui.ScrollEvent{X: 800, Y: 400, DeltaY: 4000}); err != nil {
+		t.Fatal(err)
+	}
+	if !drawn(t, driver, "The last heading") {
+		t.Fatal("the wheel did not move the body")
+	}
+}
+
+// TestSkillDetailReportsAReadFailure checks that a document that disappeared is
+// reported where the body would have been.
+func TestSkillDetailReportsAReadFailure(t *testing.T) {
+	_, driver, root := newLibraryWindow(t)
+	installStub(t, driver)
+
+	if err := os.Remove(filepath.Join(root, "owner_@_repo", "alpha", "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+	clickLabel(t, driver, "tdd")
+	clickLabel(t, driver, "alpha")
+	if !drawn(t, driver, "读取技能文档失败") {
+		t.Fatal("a document that cannot be read is not reported")
 	}
 }

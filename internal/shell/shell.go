@@ -82,6 +82,7 @@ func (s *Shell) Config() app.Config {
 	}
 	config.Paint = s.paint
 	config.OnKey = s.onKey
+	config.OnScroll = s.onScroll
 	// A page's background work publishes its result, then wakes the window; every
 	// page is given the chance to move that result into its state before the
 	// paint that reads it.
@@ -118,7 +119,18 @@ func (s *Shell) paint(canvas *ui.Canvas, size ui.Size) {
 	}
 	kit.CardFill(canvas, theme, right, size.Height)
 
-	s.view.Draw(canvas, theme, bounds, func(f *flex.Frame) {
+	// The page is laid out first and painted afterwards: what a page draws
+	// itself is a canvas component, not a flex node, and it needs the
+	// rectangle the layout gave it.
+	f := s.view.Begin(canvas, theme, bounds)
+	s.declare(f, theme)
+	f.End()
+	s.page().Overlay(canvas, theme)
+}
+
+// declare paints the navigation, the panes and the selected page.
+func (s *Shell) declare(f *flex.Frame, theme ui.Theme) {
+	{
 		f.Row().Fill().Children(func() {
 			s.nav.Draw(f, s.split.Pos, s.current, func(index int) { s.current = index })
 
@@ -140,7 +152,7 @@ func (s *Shell) paint(canvas *ui.Canvas, size ui.Size) {
 			})
 		})
 		s.page().Dialog(f, theme)
-	})
+	}
 }
 
 // content paints the toolbar and the body of the selected page.
@@ -155,6 +167,12 @@ func (s *Shell) content(f *flex.Frame, theme ui.Theme) {
 		})
 		page.Content(f, theme)
 	})
+}
+
+// onScroll gives the wheel to the selected page: the skill document is the one
+// thing in the window that is taller than the room it has.
+func (s *Shell) onScroll(event ui.ScrollEvent) ui.EventResult {
+	return s.page().Scroll(event)
 }
 
 // onKey gives the arrow keys to a focused splitter.
