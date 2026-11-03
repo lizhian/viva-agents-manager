@@ -83,6 +83,8 @@ func (s *Shell) Config() app.Config {
 	config.Paint = s.paint
 	config.OnKey = s.onKey
 	config.OnScroll = s.onScroll
+	config.OnPointer = s.onPointer
+	config.OnShortcut = s.onShortcut
 	// A page's background work publishes its result, then wakes the window; every
 	// page is given the chance to move that result into its state before the
 	// paint that reads it.
@@ -176,6 +178,16 @@ func (s *Shell) content(f *flex.Frame, theme ui.Theme) {
 // thing in the window that is taller than the room it has.
 func (s *Shell) onScroll(event ui.ScrollEvent) ui.EventResult {
 	return s.page().Scroll(event)
+}
+
+// onPointer gives a pointer event to the selected page.
+func (s *Shell) onPointer(event ui.PointerEvent) ui.EventResult {
+	return s.page().Pointer(event)
+}
+
+// onShortcut gives a chord to the selected page.
+func (s *Shell) onShortcut(event ui.KeyEvent) ui.EventResult {
+	return s.page().Shortcut(event)
 }
 
 // onKey gives the arrow keys to a focused splitter.

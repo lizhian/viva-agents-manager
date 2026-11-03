@@ -601,3 +601,69 @@ func TestUpdateCanBeCancelled(t *testing.T) {
 	clickLabel(t, driver, "取消")
 	settle(t, driver, func() bool { return drawn(t, driver, "已取消，0 个来源已更新") })
 }
+
+// TestTheHeaderScrollsWithTheBody checks that the skill's title and description
+// are part of the document rather than standing still above it.
+func TestTheHeaderScrollsWithTheBody(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	if !drawn(t, driver, "A skill the tests install.") {
+		t.Fatal("the description is not drawn")
+	}
+	if err := driver.Scroll(ui.ScrollEvent{X: 800, Y: 400, DeltaY: 4000}); err != nil {
+		t.Fatal(err)
+	}
+	if drawn(t, driver, "A skill the tests install.") {
+		t.Fatal("the description is still on screen at the end of the document")
+	}
+}
+
+// TestSelectingTextCopiesIt drags across the document and copies what it chose.
+func TestSelectingTextCopiesIt(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	if err := driver.Press(400, 50, ui.PointerButtonPrimary); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Move(700, 220); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Release(700, 220, ui.PointerButtonPrimary); err != nil {
+		t.Fatal(err)
+	}
+
+	handled, err := driver.Shortcut('c')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("the copy shortcut was not handled")
+	}
+	if text := driver.Clipboard(); !strings.Contains(text, "Test Skill") {
+		t.Fatalf("clipboard = %q, want the text the drag chose", text)
+	}
+}
+
+// TestDraggingOverALinkDoesNotOpenIt checks that a drag is not a click: the link
+// it crosses must not open the preview.
+func TestDraggingOverALinkDoesNotOpenIt(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	link := hitBounds(t, driver, "DEEPENING.md")
+	y := link.Y + link.Height/2
+	if err := driver.Press(link.X+2, y, ui.PointerButtonPrimary); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Move(link.X+link.Width-2, y); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Release(link.X+link.Width-2, y, ui.PointerButtonPrimary); err != nil {
+		t.Fatal(err)
+	}
+	if drawn(t, driver, "A file the skill links to.") {
+		t.Fatal("a drag opened the link it crossed")
+	}
+}

@@ -260,10 +260,6 @@ func (p *Page) Content(f *flex.Frame, theme ui.Theme) {
 // drawDocuments paints the skill's own document and, when it is open, the
 // preview under it.
 func (p *Page) drawDocuments(f *flex.Frame, theme ui.Theme) {
-	f.Text(p.main.document.Name).FontSize(22).Bold()
-	if p.main.document.Description != "" {
-		f.Paragraph(p.main.document.Description, 3).FontSize(13).Muted()
-	}
 	if p.previewFile == "" {
 		p.main.slot = f.Slot().Grow(1).FillWidth()
 		p.main.slotted = true
@@ -331,6 +327,124 @@ func (p *Page) Scroll(event ui.ScrollEvent) ui.EventResult {
 	return p.main.scroll.Wheel(event)
 }
 
+// Pointer selects the text of a document: a press starts a selection, a drag
+// extends it, and a release that chose something swallows the click so a link
+// under the pointer does not open.
+func (p *Page) Pointer(event ui.PointerEvent) ui.EventResult {
+	point := ui.Point{X: event.X, Y: event.Y}
+	switch event.Kind {
+	case ui.PointerDown:
+		r := p.readerAt(event.X, event.Y)
+		if r == nil {
+			return ui.EventResult{}
+		}
+		p.clearSelections(r)
+		if !r.selectAt(point) {
+			return ui.EventResult{}
+		}
+		return ui.EventResult{Repaint: true}
+	case ui.PointerMove:
+		r := p.selectingReader()
+		if r == nil {
+			return ui.EventResult{}
+		}
+		r.extendTo(point)
+		return ui.EventResult{Repaint: true}
+	case ui.PointerUp:
+		r := p.selectingReader()
+		if r == nil {
+			return ui.EventResult{}
+		}
+		r.extendTo(point)
+		if r.finish() {
+			// A drag is not a click: it must not open the link it ended on.
+			return ui.EventResult{Handled: true, Repaint: true}
+		}
+		return ui.EventResult{Repaint: true}
+	}
+	return ui.EventResult{}
+}
+
+// Shortcut copies the text the reader has chosen.
+func (p *Page) Shortcut(event ui.KeyEvent) ui.EventResult {
+	if event.Text != "c" || event.Modifiers&(ui.ModifierMeta|ui.ModifierControl) == 0 {
+		return ui.EventResult{}
+	}
+	for _, r := range []*reader{&p.main, &p.preview} {
+		if text := r.selected(); text != "" {
+			return ui.EventResult{Handled: true, ClipboardText: text}
+		}
+	}
+	return ui.EventResult{}
+}
+
+// readerAt is the document under a window point, or nil.
+func (p *Page) readerAt(x, y float32) *reader {
+	if p.preview.slotted && covers(p.preview.area, x, y) {
+		return &p.preview
+	}
+	if p.main.slotted && covers(p.main.area, x, y) {
+		return &p.main
+	}
+	return nil
+}
+
+// selectingReader is the document whose selection is being dragged out.
+func (p *Page) selectingReader() *reader {
+	for _, r := range []*reader{&p.preview, &p.main} {
+		if r.selecting {
+			return r
+		}
+	}
+	return nil
+}
+
+// clearSelections drops what the other document had chosen.
+func (p *Page) clearSelections(keep *reader) {
+	for _, r := range []*reader{&p.main, &p.preview} {
+		if r == keep {
+			continue
+		}
+		r.selection = components.MarkdownSelection{}
+		r.selecting = false
+	}
+}
+
+// selectAt begins a selection at a window point.
+func (r *reader) selectAt(point ui.Point) bool {
+	offset, ok := r.view.OffsetAt(point)
+	if !ok {
+		return false
+	}
+	r.selection = components.MarkdownSelection{Anchor: offset, Focus: offset}
+	r.selecting = true
+	return true
+}
+
+// extendTo moves the end of the selection to a window point.
+func (r *reader) extendTo(point ui.Point) {
+	if !r.selecting {
+		return
+	}
+	if offset, ok := r.view.OffsetAt(point); ok {
+		r.selection.Focus = offset
+	}
+}
+
+// finish ends the selection, reporting whether it holds any text.
+func (r *reader) finish() bool {
+	r.selecting = false
+	return r.selection.Anchor != r.selection.Focus
+}
+
+// selected is the text the selection holds.
+func (r *reader) selected() string {
+	if r.selection.Anchor == r.selection.Focus {
+		return ""
+	}
+	return r.view.SelectedText(r.selection)
+}
+
 // load reads the chosen skill's own document. It runs when the choice changes and
 // after the library is reloaded, so a SKILL.md edited by hand shows up on the
 // next click.
@@ -341,6 +455,7 @@ func (p *Page) load() {
 		return
 	}
 	p.main.read(p.store, p.chosen.source, p.chosen.skill, "SKILL.md", p.chosen.skill)
+	p.main.render(true)
 }
 
 // openPreview shows a file of the chosen skill under its own document.
@@ -350,6 +465,7 @@ func (p *Page) openPreview(file string) {
 	}
 	p.previewFile = file
 	p.preview.read(p.store, p.chosen.source, p.chosen.skill, file, path.Base(file))
+	p.preview.render(false)
 	p.previewSplit.Pos = p.mainTop()
 }
 
@@ -386,9 +502,13 @@ type reader struct {
 	width  float32
 	height float32
 	area   ui.Rect
+	// selection is the text the reader has chosen, and selecting says a drag is
+	// still choosing it.
+	selection components.MarkdownSelection
+	selecting bool
 }
 
-// read loads one file of the skill and parses its body.
+// read loads one file of the skill into the reader.
 func (r *reader) read(store domain.Store, source, skill, file, fallback string) {
 	*r = reader{links: r.links}
 	document, err := store.Document(source, skill, file)
@@ -400,7 +520,21 @@ func (r *reader) read(store domain.Store, source, skill, file, fallback string) 
 		document.Name = fallback
 	}
 	r.document = document
-	r.parsed.Parse(domain.RewriteLinks(document.Body))
+}
+
+// render lays the document out as markdown. With heading, what the document
+// declares about itself goes on top as its own title and summary, so they scroll
+// and select with the body instead of standing still above it.
+func (r *reader) render(heading bool) {
+	var source strings.Builder
+	if heading {
+		source.WriteString("# " + r.document.Name + "\n\n")
+		if r.document.Description != "" {
+			source.WriteString(r.document.Description + "\n\n")
+		}
+	}
+	source.WriteString(r.document.Body)
+	r.parsed.Parse(domain.RewriteLinks(source.String()))
 }
 
 // paint draws the body into the room Content reserved for it.
@@ -423,7 +557,7 @@ func (r *reader) paint(canvas *ui.Canvas, theme ui.Theme) {
 	r.view.Paint(canvas, components.MarkdownPaint{
 		Look: components.MarkdownLookFor(theme),
 		X:    area.X, Y: area.Y - r.scroll.Offset,
-		Clip: area, Links: r.links,
+		Clip: area, Links: r.links, Selection: r.selection,
 	})
 }
 
