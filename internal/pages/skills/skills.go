@@ -17,6 +17,7 @@ import (
 	"github.com/vivaui/viva/ui"
 
 	"github.com/lizhian/viva-agents-manager/internal/domain"
+	"github.com/lizhian/viva-agents-manager/internal/icons"
 	"github.com/lizhian/viva-agents-manager/internal/kit"
 	"github.com/lizhian/viva-agents-manager/internal/pages"
 )
@@ -27,8 +28,8 @@ const (
 	searchInset = 12
 	// paneWidth is the column's first width; the splitter fits it afterwards.
 	paneWidth = 220
-	// paneMin is the narrowest the column may get: wide enough for the buttons
-	// above the search box to sit on one row.
+	// paneMin is the narrowest the column may get: wide enough for the search box
+	// and for a source's name beside the tree's chevron.
 	paneMin = 196
 )
 
@@ -632,10 +633,12 @@ func (p *Page) drawPane(f *flex.Frame, theme ui.Theme, width float32) {
 	f.Column().Width(width).Background(theme.Card).Children(func() {
 		// The buttons sit in the strip the content toolbar occupies, so the two
 		// columns read as one band. The row is the window's drag region, and the
-		// buttons inside it keep their own presses.
+		// buttons inside it keep their own presses. The strip before them stays
+		// the drag region, which is what pushes them to its right edge.
 		f.Row().Height(kit.Titlebar).PadSides(0, searchInset, 0, searchInset).
 			Items(flex.Center).Gap(6).MovesWindow().Children(func() {
-			p.buttons(f)
+			f.Spacer()
+			p.buttons(f, theme)
 		})
 		if p.updateStatus != "" {
 			color := theme.MutedForeground
@@ -653,27 +656,30 @@ func (p *Page) drawPane(f *flex.Frame, theme ui.Theme, width float32) {
 	})
 }
 
-// buttons draws what can be done to the library as a whole.
-func (p *Page) buttons(f *flex.Frame) {
-	if f.Button(p.ids.install, "安装").Outline().XSmall().Disabled(p.updating).Clicked() {
+// buttons draws what can be done to the library as a whole. Each one is a glyph,
+// so its name is what a screen reader announces rather than anything on screen.
+func (p *Page) buttons(f *flex.Frame, theme ui.Theme) {
+	install := kit.IconButtonSpec{ID: p.ids.install, Label: "安装", Icon: icons.Plus, Disabled: p.updating}
+	if kit.IconButton(f, theme, install) {
 		p.openDialog()
 	}
 	// While the library updates, the same button stops it: a run that takes half a
 	// minute needs a way out.
-	label := "更新"
+	update := kit.IconButtonSpec{ID: p.ids.update, Label: "更新", Icon: icons.RefreshCw, Disabled: p.installing}
 	if p.updating {
-		label = "取消"
+		update.Label, update.Icon = "取消", icons.X
 	}
-	if f.Button(p.ids.update, label).Outline().XSmall().Disabled(p.installing).Clicked() {
+	if kit.IconButton(f, theme, update) {
 		if p.updating {
 			p.cancelUpdate()
 		} else {
 			p.startUpdate()
 		}
 	}
-	// Viva cannot reveal a directory yet, so the button is drawn unclickable
-	// rather than pressed to no effect. See domain.ErrUnsupported.
-	f.Button(p.ids.folder, "本地文件夹").Outline().XSmall().Disabled(true)
+	// Viva cannot reveal a directory yet, so the button is drawn inert rather than
+	// pressed to no effect. See domain.ErrUnsupported.
+	folder := kit.IconButtonSpec{ID: p.ids.folder, Label: "本地文件夹", Icon: icons.FolderOpen, Disabled: true}
+	kit.IconButton(f, theme, folder)
 }
 
 // filter keeps the query in step with the search box. The text is read and
