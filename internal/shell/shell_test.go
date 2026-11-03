@@ -1,20 +1,31 @@
 package shell
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/ui"
 
 	"github.com/lizhian/viva-agents-manager/internal/domain"
 	"github.com/lizhian/viva-agents-manager/internal/kit"
+	"github.com/lizhian/viva-agents-manager/internal/library"
 )
 
 // newWindow builds the window over the placeholder store, driven without a
 // window: the driver runs the real painter and input router.
 func newWindow(t *testing.T) (*Shell, *app.Driver) {
 	t.Helper()
-	window := New(domain.NewMemory())
+	return newWindowWith(t, domain.NewMemory())
+}
+
+// newWindowWith builds the window over a store of the test's own.
+func newWindowWith(t *testing.T, store domain.Store) (*Shell, *app.Driver) {
+	t.Helper()
+	window := New(store)
 	var canvas ui.Canvas
 	driver, err := app.NewDriver(window.Config(), &canvas)
 	if err != nil {
@@ -22,6 +33,65 @@ func newWindow(t *testing.T) (*Shell, *app.Driver) {
 	}
 	t.Cleanup(driver.Close)
 	return window, driver
+}
+
+// emptyStore is a store with nothing installed, which is what a first run sees.
+type emptyStore struct{ *domain.Memory }
+
+// Sources reports an empty library.
+func (emptyStore) Sources() []domain.Source { return nil }
+
+// stubInstaller fetches a repository the way the skills CLI would, without a
+// network: one skill in a folder of its own.
+type stubInstaller struct{}
+
+func (stubInstaller) Prepare(ctx context.Context, repo, dir string) ([]domain.PreparedSkill, error) {
+	root := filepath.Join(dir, ".agents", "skills", "tdd")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("# tdd"), 0o600); err != nil {
+		return nil, err
+	}
+	return []domain.PreparedSkill{{Name: "tdd", Path: root}}, nil
+}
+
+// newLibraryWindow builds the window over a real library in a throwaway folder,
+// so a test drives the same install path the application does.
+func newLibraryWindow(t *testing.T) (*Shell, *app.Driver) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := library.New(library.Config{
+		Root:      filepath.Join(dir, "skills"),
+		Tmp:       filepath.Join(dir, ".tmp"),
+		DBPath:    filepath.Join(dir, "sqlite.db"),
+		Installer: stubInstaller{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return newWindowWith(t, store)
+}
+
+// settle pumps the driver until the window has applied what a background
+// install published, the way a window's next loop turn would.
+func settle(t *testing.T, driver *app.Driver, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := driver.Pump(); err != nil {
+			t.Fatal(err)
+		}
+		if done() {
+			return
+		}
+		select {
+		case <-driver.Wakes():
+		case <-time.After(time.Millisecond):
+		}
+	}
+	t.Fatal("the install did not finish")
 }
 
 // drag moves the pointer from one x to another along the splitter row.
@@ -52,6 +122,18 @@ func clickLabel(t *testing.T, driver *app.Driver, label string) {
 		}
 	}
 	t.Fatalf("no hit region labelled %q", label)
+}
+
+// hitBounds is the rectangle of the first hit region with that label.
+func hitBounds(t *testing.T, driver *app.Driver, label string) ui.Rect {
+	t.Helper()
+	for _, hit := range driver.Snapshot().Hits {
+		if hit.Label == label {
+			return hit.Bounds
+		}
+	}
+	t.Fatalf("no hit region labelled %q", label)
+	return ui.Rect{}
 }
 
 // drawn reports whether the frame draws that text.
@@ -187,5 +269,82 @@ func TestInstallDialog(t *testing.T) {
 	}
 	if drawn(t, driver, "安装 Skill 来源") {
 		t.Fatal("a press on the scrim did not close the dialog")
+	}
+}
+
+// TestInstallFromTheDialog types a repository and installs it: the install runs
+// off the window thread, the dialog closes when its result is applied, and the
+// source and its skill are in the tree.
+func TestInstallFromTheDialog(t *testing.T) {
+	_, driver := newLibraryWindow(t)
+
+	clickLabel(t, driver, "安装")
+	clickLabel(t, driver, "GitHub 仓库")
+	if err := driver.Type("anthropics/skills"); err != nil {
+		t.Fatal(err)
+	}
+	clickLabel(t, driver, "开始安装")
+	settle(t, driver, func() bool { return !drawn(t, driver, "安装 Skill 来源") })
+
+	for _, want := range []string{"anthropics/skills", "tdd"} {
+		if !drawn(t, driver, want) {
+			t.Fatalf("%q is not in the tree after the install", want)
+		}
+	}
+}
+
+// TestInstallReportsAConflict installs the same repository twice: the second
+// attempt keeps the dialog open and says why.
+func TestInstallReportsAConflict(t *testing.T) {
+	_, driver := newLibraryWindow(t)
+
+	for attempt := 0; attempt < 2; attempt++ {
+		clickLabel(t, driver, "安装")
+		clickLabel(t, driver, "GitHub 仓库")
+		if err := driver.Type("a/b"); err != nil {
+			t.Fatal(err)
+		}
+		clickLabel(t, driver, "开始安装")
+		if attempt == 0 {
+			settle(t, driver, func() bool { return !drawn(t, driver, "安装 Skill 来源") })
+			continue
+		}
+		settle(t, driver, func() bool { return drawn(t, driver, "这个仓库已经装过了") })
+		if !drawn(t, driver, "安装 Skill 来源") {
+			t.Fatal("the dialog closed on a failed install")
+		}
+	}
+}
+
+// TestEmptyLibrarySaysSo checks that a first run says the library is empty,
+// rather than reporting a search that matched nothing.
+func TestEmptyLibrarySaysSo(t *testing.T) {
+	_, driver := newWindowWith(t, emptyStore{domain.NewMemory()})
+	if !drawn(t, driver, "还没有安装任何技能来源") {
+		t.Fatal("an empty library does not say so")
+	}
+}
+
+// TestPaneButtonsSitAboveTheSearchBox checks the column's header: the three
+// buttons share one row over the search box, and they stay inside the column at
+// the width the splitter allows, since it can be dragged that narrow.
+func TestPaneButtonsSitAboveTheSearchBox(t *testing.T) {
+	window, driver := newWindow(t)
+	pane := window.page().Pane()
+	pane.Split.Pos = pane.Min
+	if err := driver.Resize(1100, 720); err != nil {
+		t.Fatal(err)
+	}
+
+	search := hitBounds(t, driver, "搜索 Skills")
+	right := window.split.Pos + kit.SplitterWidth + pane.Split.Pos
+	for _, label := range []string{"安装", "更新", "本地文件夹"} {
+		hit := hitBounds(t, driver, label)
+		if hit.Y+hit.Height > search.Y {
+			t.Fatalf("%q is not above the search box", label)
+		}
+		if hit.X+hit.Width > right {
+			t.Fatalf("%q ends at %v, past the column's edge at %v", label, hit.X+hit.Width, right)
+		}
 	}
 }

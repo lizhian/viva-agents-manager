@@ -16,8 +16,6 @@ type Page interface {
 	Title() string
 	// Pane is the page's own column beside the content, or nil.
 	Pane() *Pane
-	// Actions are the buttons the content toolbar offers.
-	Actions() []Action
 	// Fields are the page's text fields, which the shell hands to the platform so
 	// typing reaches the focused one.
 	Fields() []*flex.Field
@@ -25,6 +23,9 @@ type Page interface {
 	Content(f *flex.Frame, theme ui.Theme)
 	// Dialog paints the page's modal over the window, if it has one open.
 	Dialog(f *flex.Frame, theme ui.Theme)
+	// Wake runs on the window thread before a repaint that background work asked
+	// for, and is where a page moves what that work published into its own state.
+	Wake()
 }
 
 // Pane is a page's own column beside the content. The page owns the width, the
@@ -36,13 +37,6 @@ type Pane struct {
 	Draw func(f *flex.Frame, theme ui.Theme, width float32)
 }
 
-// Action is one button in the content toolbar.
-type Action struct {
-	ID    ui.ID
-	Label string
-	Run   func()
-}
-
 // Base answers for the parts a page does not have, so a page declares only what
 // it uses.
 type Base struct{}
@@ -50,14 +44,14 @@ type Base struct{}
 // Pane reports that the page has no column of its own.
 func (Base) Pane() *Pane { return nil }
 
-// Actions reports that the page offers no toolbar buttons.
-func (Base) Actions() []Action { return nil }
-
 // Fields reports that the page has no text fields.
 func (Base) Fields() []*flex.Field { return nil }
 
 // Dialog reports that the page has no modal.
 func (Base) Dialog(*flex.Frame, ui.Theme) {}
+
+// Wake reports that the page has no background work to apply.
+func (Base) Wake() {}
 
 // Placeholder is the body a page shows before it has anything to show: a title,
 // one line of explanation and an empty card where the content will go.

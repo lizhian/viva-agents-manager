@@ -4,25 +4,32 @@
 package domain
 
 import (
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
 
-// Skill is one skill a source provides.
-type Skill struct {
-	Name        string
-	Description string
-	Enabled     bool
-}
+// Skill is one skill a source provides, named as its directory is.
+type Skill struct{ Name string }
 
-// Source is where skills come from: a GitHub repository, or a folder on this
-// machine (Repo empty). Label is what the tree shows, so a local source can have
-// a name of its own.
+// Source is where skills come from. Name is its directory in the library; Repo
+// is the repository it was installed from, empty for a source that is only a
+// folder on this machine.
 type Source struct {
-	Label       string
+	Name        string
 	Repo        string
 	InstalledAt time.Time
 	Skills      []Skill
+}
+
+// Label is what the tree shows: the repository, or the folder's own name for a
+// source that has no repository.
+func (s Source) Label() string {
+	if s.Repo != "" {
+		return s.Repo
+	}
+	return s.Name
 }
 
 // Match reports whether the source has a skill whose name contains query. Query
@@ -39,3 +46,43 @@ func (s Source) Match(query string) bool {
 
 // Match reports whether the skill's name contains query.
 func (s Skill) Match(query string) bool { return strings.Contains(s.Name, query) }
+
+// repoPattern is the shape of a repository the application accepts: one slash,
+// and characters GitHub allows on either side of it.
+var repoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+
+// ValidRepo reports whether repo names a repository as "owner/repo".
+func ValidRepo(repo string) bool {
+	if !repoPattern.MatchString(repo) {
+		return false
+	}
+	owner, name, _ := strings.Cut(repo, "/")
+	return owner != "." && owner != ".." && name != "." && name != ".."
+}
+
+// separator joins the two halves of a repository in a directory name. It is
+// reversible, unlike a bare underscore: "mattpocock_skills" could be either
+// "mattpocock/skills" or a folder someone named that.
+const separator = "_@_"
+
+// SafeName is the directory a repository's skills are installed in.
+func SafeName(repo string) string { return strings.ReplaceAll(repo, "/", separator) }
+
+// RepoOf reads a repository back out of a library directory name. A name that
+// does not read back as a repository is a local source, and reports none.
+func RepoOf(name string) string {
+	if !strings.Contains(name, separator) {
+		return ""
+	}
+	repo := strings.ReplaceAll(name, separator, "/")
+	if !ValidRepo(repo) {
+		return ""
+	}
+	return repo
+}
+
+// ValidSkillName reports whether name can be a skill's directory: one path
+// element, and neither the current nor the parent directory.
+func ValidSkillName(name string) bool {
+	return name != "" && name != "." && name != ".." && filepath.Base(name) == name
+}
