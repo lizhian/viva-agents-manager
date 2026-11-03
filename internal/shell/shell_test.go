@@ -595,9 +595,9 @@ func TestUpdateCanBeCancelled(t *testing.T) {
 	// Wait for the source to be in flight: stopping before it starts is a
 	// different path, and one this test is not about.
 	settle(t, driver, func() bool { return drawn(t, driver, "正在更新 1/1 · owner/repo") })
-	if !drawn(t, driver, "取消") {
-		t.Fatal("an update in flight does not offer to stop")
-	}
+	// The button carries no text, so what it offers while a run is in flight is
+	// its name: the glyph alone would leave the reader guessing.
+	hitBounds(t, driver, "取消")
 	clickLabel(t, driver, "取消")
 	settle(t, driver, func() bool { return drawn(t, driver, "已取消，0 个来源已更新") })
 }

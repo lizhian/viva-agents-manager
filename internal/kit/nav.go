@@ -72,12 +72,8 @@ func (n *Nav) Draw(f *flex.Frame, width float32, selected int, onSelect func(ind
 		f.Row().Height(36).PadSides(0, 10, 0, 14).Items(flex.Center).Children(func() {
 			f.Text("v0.1.0").FontSize(11).Muted()
 			f.Spacer()
-			button := f.Row().Size(24, 24).Radius(6).Center().
-				HoverBackground(theme.Hover).
-				HitWith(n.ToggleID, n.Theme.Label(), ui.HitOptions{Cursor: ui.PointerCursorHand})
-			if button.Children(func() {
-				f.Text(n.Theme.Glyph()).FontSize(15).Color(theme.MutedForeground)
-			}).Clicked() {
+			spec := IconButtonSpec{ID: n.ToggleID, Label: n.Theme.Label(), Icon: n.Theme.Icon()}
+			if IconButton(f, theme, spec) {
 				n.Theme.Toggle()
 			}
 		})
