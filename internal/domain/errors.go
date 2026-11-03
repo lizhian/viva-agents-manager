@@ -17,6 +17,9 @@ var (
 	ErrNoSkills = errors.New("domain: repository has no installable skills")
 	// ErrNpxMissing is what an installer returns when no npx is on the path.
 	ErrNpxMissing = errors.New("domain: npx not found")
+	// ErrNoDocument is what Document returns when the skill is not in the store,
+	// or when the name it was given could not be one.
+	ErrNoDocument = errors.New("domain: no such skill document")
 	// ErrUnsupported is what a Store returns for a desktop capability the
 	// framework does not offer on this platform.
 	ErrUnsupported = errors.New("domain: not supported on this platform")

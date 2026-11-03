@@ -18,10 +18,7 @@ func New() *Page { return &Page{} }
 // Name is the navigation label.
 func (p *Page) Name() string { return "AGENTS.md" }
 
-// Title is what the content toolbar shows.
-func (p *Page) Title() string { return p.Name() }
-
 // Content paints the placeholder body.
 func (p *Page) Content(f *flex.Frame, theme ui.Theme) {
-	pages.Placeholder(f, theme, p.Title(), "这一页还没有内容。")
+	pages.Placeholder(f, theme, p.Name(), "这一页还没有内容。")
 }

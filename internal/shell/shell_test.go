@@ -2,8 +2,10 @@ package shell
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,23 +44,57 @@ type emptyStore struct{ *domain.Memory }
 func (emptyStore) Sources() []domain.Source { return nil }
 
 // stubInstaller fetches a repository the way the skills CLI would, without a
-// network: one skill in a folder of its own.
+// network: two skills, one of which declares itself and is long enough to need
+// scrolling.
 type stubInstaller struct{}
 
+// stubDeclared is the body of the skill that declares a name and a description.
+func stubDeclared() string {
+	var body strings.Builder
+	body.WriteString("---\nname: Test Skill\ndescription: A skill the tests install.\n---\n\n# Test Skill\n\nSee [DEEPENING.md](DEEPENING.md).\n\n")
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&body, "Paragraph %d of the body.\n\n", i)
+	}
+	body.WriteString("## The last heading\n")
+	return body.String()
+}
+
 func (stubInstaller) Prepare(ctx context.Context, repo, dir string) ([]domain.PreparedSkill, error) {
-	root := filepath.Join(dir, ".agents", "skills", "tdd")
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return nil, err
+	written := []struct {
+		name  string
+		files map[string]string
+	}{
+		{"alpha", map[string]string{
+			"SKILL.md":     stubDeclared(),
+			"DEEPENING.md": "# Deeper\n\nA file the skill links to.\n",
+		}},
+		{"long", map[string]string{
+			"SKILL.md": "---\nname: Long\ndescription: " + strings.Repeat("A description long enough to want more room than the window has. ", 8) + "\n---\n\n# Long\n",
+		}},
+		{"tdd", map[string]string{
+			"SKILL.md": "# tdd\n\nThe plain body.\n",
+		}},
 	}
-	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("# tdd"), 0o600); err != nil {
-		return nil, err
+	prepared := make([]domain.PreparedSkill, 0, len(written))
+	for _, skill := range written {
+		root := filepath.Join(dir, ".agents", "skills", skill.name)
+		for name, body := range skill.files {
+			if err := os.MkdirAll(root, 0o700); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o600); err != nil {
+				return nil, err
+			}
+		}
+		prepared = append(prepared, domain.PreparedSkill{Name: skill.name, Path: root})
 	}
-	return []domain.PreparedSkill{{Name: "tdd", Path: root}}, nil
+	return prepared, nil
 }
 
 // newLibraryWindow builds the window over a real library in a throwaway folder,
-// so a test drives the same install path the application does.
-func newLibraryWindow(t *testing.T) (*Shell, *app.Driver) {
+// so a test drives the same install path the application does. It returns the
+// library's root, for tests that reach into the files.
+func newLibraryWindow(t *testing.T) (*Shell, *app.Driver, string) {
 	t.Helper()
 	dir := t.TempDir()
 	store, err := library.New(library.Config{
@@ -71,7 +107,8 @@ func newLibraryWindow(t *testing.T) (*Shell, *app.Driver) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	return newWindowWith(t, store)
+	window, driver := newWindowWith(t, store)
+	return window, driver, filepath.Join(dir, "skills")
 }
 
 // settle pumps the driver until the window has applied what a background
@@ -133,6 +170,19 @@ func hitBounds(t *testing.T, driver *app.Driver, label string) ui.Rect {
 		}
 	}
 	t.Fatalf("no hit region labelled %q", label)
+	return ui.Rect{}
+}
+
+// horizontalBar is the divider that splits a column in two: the one labelled
+// "Resize panes" that is a strip rather than a full-height line.
+func horizontalBar(t *testing.T, driver *app.Driver) ui.Rect {
+	t.Helper()
+	for _, hit := range driver.Snapshot().Hits {
+		if hit.Label == "Resize panes" && hit.Bounds.Height < 20 {
+			return hit.Bounds
+		}
+	}
+	t.Fatal("no horizontal divider is drawn")
 	return ui.Rect{}
 }
 
@@ -276,7 +326,7 @@ func TestInstallDialog(t *testing.T) {
 // off the window thread, the dialog closes when its result is applied, and the
 // source and its skill are in the tree.
 func TestInstallFromTheDialog(t *testing.T) {
-	_, driver := newLibraryWindow(t)
+	_, driver, _ := newLibraryWindow(t)
 
 	clickLabel(t, driver, "安装")
 	clickLabel(t, driver, "GitHub 仓库")
@@ -296,7 +346,7 @@ func TestInstallFromTheDialog(t *testing.T) {
 // TestInstallReportsAConflict installs the same repository twice: the second
 // attempt keeps the dialog open and says why.
 func TestInstallReportsAConflict(t *testing.T) {
-	_, driver := newLibraryWindow(t)
+	_, driver, _ := newLibraryWindow(t)
 
 	for attempt := 0; attempt < 2; attempt++ {
 		clickLabel(t, driver, "安装")
@@ -346,5 +396,274 @@ func TestPaneButtonsSitAboveTheSearchBox(t *testing.T) {
 		if hit.X+hit.Width > right {
 			t.Fatalf("%q ends at %v, past the column's edge at %v", label, hit.X+hit.Width, right)
 		}
+	}
+}
+
+// installStub drives the dialog to install the stub repository, and waits for
+// the window to apply the result.
+func installStub(t *testing.T, driver *app.Driver) {
+	t.Helper()
+	clickLabel(t, driver, "安装")
+	clickLabel(t, driver, "GitHub 仓库")
+	if err := driver.Type("owner/repo"); err != nil {
+		t.Fatal(err)
+	}
+	clickLabel(t, driver, "开始安装")
+	settle(t, driver, func() bool { return !drawn(t, driver, "安装 Skill 来源") })
+}
+
+// TestSkillDetailShowsTheDocument checks the detail column: what the document
+// declares about itself, and its body.
+func TestSkillDetailShowsTheDocument(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	for _, want := range []string{"Test Skill", "A skill the tests install.", "Paragraph 0 of the body."} {
+		if !drawn(t, driver, want) {
+			t.Fatalf("%q is not drawn in the detail column", want)
+		}
+	}
+}
+
+// TestSkillDetailWithoutADeclaration checks that a document that declares
+// nothing falls back to its directory name, and shows no subtitle.
+func TestSkillDetailWithoutADeclaration(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	clickLabel(t, driver, "tdd")
+	if drawn(t, driver, "A skill the tests install.") {
+		t.Fatal("another skill's description is still drawn")
+	}
+	if drawn(t, driver, "SKILL") {
+		t.Fatal("a document that declares no name fell back to its file name")
+	}
+	if !drawn(t, driver, "The plain body.") {
+		t.Fatal("the chosen skill's body is not drawn")
+	}
+}
+
+// TestSkillDetailScrolls checks that a body taller than the column moves with
+// the wheel.
+func TestSkillDetailScrolls(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	if drawn(t, driver, "The last heading") {
+		t.Fatal("the end of the body is on screen before scrolling")
+	}
+	if err := driver.Scroll(ui.ScrollEvent{X: 800, Y: 400, DeltaY: 4000}); err != nil {
+		t.Fatal(err)
+	}
+	if !drawn(t, driver, "The last heading") {
+		t.Fatal("the wheel did not move the body")
+	}
+}
+
+// TestSkillDetailReportsAReadFailure checks that a document that disappeared is
+// reported where the body would have been.
+func TestSkillDetailReportsAReadFailure(t *testing.T) {
+	_, driver, root := newLibraryWindow(t)
+	installStub(t, driver)
+
+	if err := os.Remove(filepath.Join(root, "owner_@_repo", "alpha", "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+	clickLabel(t, driver, "tdd")
+	clickLabel(t, driver, "alpha")
+	if !drawn(t, driver, "读取技能文档失败") {
+		t.Fatal("a document that cannot be read is not reported")
+	}
+}
+
+// TestALongDescriptionKeepsTheColumns checks that a skill whose description is
+// wider than the window cannot squeeze the navigation or the page's column: a
+// flex column's preferred width is the sum of its children's, so the columns
+// that must keep their width have to be filled rather than grown.
+func TestALongDescriptionKeepsTheColumns(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	clickLabel(t, driver, "long")
+	if nav := hitBounds(t, driver, "Skills"); nav.Width < 80 {
+		t.Fatalf("the navigation is %v wide, so a long description squeezed it", nav.Width)
+	}
+	if search := hitBounds(t, driver, "搜索 Skills"); search.Width < 150 {
+		t.Fatalf("the page's column is %v wide, so a long description squeezed it", search.Width)
+	}
+}
+
+// TestSkillDetailOpensALinkedDocument checks that a link to another file of the
+// skill opens it under the skill's own document, and that closing puts the
+// document back.
+func TestSkillDetailOpensALinkedDocument(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	if drawn(t, driver, "A file the skill links to.") {
+		t.Fatal("the linked document is on screen before it was opened")
+	}
+	clickLabel(t, driver, "DEEPENING.md")
+	if !drawn(t, driver, "A file the skill links to.") {
+		t.Fatal("the linked document did not open")
+	}
+	clickLabel(t, driver, "关闭")
+	if drawn(t, driver, "A file the skill links to.") {
+		t.Fatal("the preview is still drawn after closing it")
+	}
+	if !drawn(t, driver, "Paragraph 0 of the body.") {
+		t.Fatal("the skill's own document is not back")
+	}
+}
+
+// TestPreviewSplitterDrag drags the divider between the skill's own document and
+// the preview, and checks the preview follows it.
+func TestPreviewSplitterDrag(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+	clickLabel(t, driver, "DEEPENING.md")
+
+	header := hitBounds(t, driver, "关闭")
+	bar := horizontalBar(t, driver)
+	x, y := bar.X+bar.Width/2, bar.Y+bar.Height/2
+	if err := driver.Press(x, y, ui.PointerButtonPrimary); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Move(x, y-60); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Release(x, y-60, ui.PointerButtonPrimary); err != nil {
+		t.Fatal(err)
+	}
+
+	if after := hitBounds(t, driver, "关闭").Y; after >= header.Y {
+		t.Fatalf("the preview did not follow the divider: %v then %v", header.Y, after)
+	}
+}
+
+// slowInstaller waits for the context instead of answering, so a test can watch
+// an update that is still running.
+type slowInstaller struct{}
+
+func (slowInstaller) Prepare(ctx context.Context, repo, dir string) ([]domain.PreparedSkill, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// newSeededWindow builds the window over a library that already holds one source,
+// written by hand, so a test needs no install to get something to update.
+func newSeededWindow(t *testing.T, installer domain.Installer) (*Shell, *app.Driver) {
+	t.Helper()
+	dir := t.TempDir()
+	root := filepath.Join(dir, "skills")
+	skill := filepath.Join(root, "owner_@_repo", "alpha")
+	if err := os.MkdirAll(skill, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("# alpha\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := library.New(library.Config{
+		Root:      root,
+		Tmp:       filepath.Join(dir, ".tmp"),
+		DBPath:    filepath.Join(dir, "sqlite.db"),
+		Installer: installer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return newWindowWith(t, store)
+}
+
+// TestUpdateReportsItsResult clicks update and checks the status line says what
+// happened.
+func TestUpdateReportsItsResult(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	clickLabel(t, driver, "更新")
+	settle(t, driver, func() bool { return drawn(t, driver, "1 个来源已更新") })
+}
+
+// TestUpdateCanBeCancelled checks that an update in flight offers to stop, and
+// that stopping says so.
+func TestUpdateCanBeCancelled(t *testing.T) {
+	_, driver := newSeededWindow(t, slowInstaller{})
+
+	clickLabel(t, driver, "更新")
+	// Wait for the source to be in flight: stopping before it starts is a
+	// different path, and one this test is not about.
+	settle(t, driver, func() bool { return drawn(t, driver, "正在更新 1/1 · owner/repo") })
+	if !drawn(t, driver, "取消") {
+		t.Fatal("an update in flight does not offer to stop")
+	}
+	clickLabel(t, driver, "取消")
+	settle(t, driver, func() bool { return drawn(t, driver, "已取消，0 个来源已更新") })
+}
+
+// TestTheHeaderScrollsWithTheBody checks that the skill's title and description
+// are part of the document rather than standing still above it.
+func TestTheHeaderScrollsWithTheBody(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	if !drawn(t, driver, "A skill the tests install.") {
+		t.Fatal("the description is not drawn")
+	}
+	if err := driver.Scroll(ui.ScrollEvent{X: 800, Y: 400, DeltaY: 4000}); err != nil {
+		t.Fatal(err)
+	}
+	if drawn(t, driver, "A skill the tests install.") {
+		t.Fatal("the description is still on screen at the end of the document")
+	}
+}
+
+// TestSelectingTextCopiesIt drags across the document and copies what it chose.
+func TestSelectingTextCopiesIt(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	if err := driver.Press(400, 50, ui.PointerButtonPrimary); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Move(700, 220); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Release(700, 220, ui.PointerButtonPrimary); err != nil {
+		t.Fatal(err)
+	}
+
+	handled, err := driver.Shortcut('c')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("the copy shortcut was not handled")
+	}
+	if text := driver.Clipboard(); !strings.Contains(text, "Test Skill") {
+		t.Fatalf("clipboard = %q, want the text the drag chose", text)
+	}
+}
+
+// TestDraggingOverALinkDoesNotOpenIt checks that a drag is not a click: the link
+// it crosses must not open the preview.
+func TestDraggingOverALinkDoesNotOpenIt(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+
+	link := hitBounds(t, driver, "DEEPENING.md")
+	y := link.Y + link.Height/2
+	if err := driver.Press(link.X+2, y, ui.PointerButtonPrimary); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Move(link.X+link.Width-2, y); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Release(link.X+link.Width-2, y, ui.PointerButtonPrimary); err != nil {
+		t.Fatal(err)
+	}
+	if drawn(t, driver, "A file the skill links to.") {
+		t.Fatal("a drag opened the link it crossed")
 	}
 }

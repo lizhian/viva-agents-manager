@@ -60,22 +60,8 @@ func (l *Library) Install(ctx context.Context, repo string, progress func(domain
 	}
 	defer os.RemoveAll(stage)
 
-	seen := make(map[string]bool, len(prepared))
-	for _, item := range prepared {
-		if !domain.ValidSkillName(item.Name) {
-			return fmt.Errorf("技能名 %q 不能作为目录名", item.Name)
-		}
-		if seen[item.Name] {
-			return fmt.Errorf("技能 %s 出现了两次", item.Name)
-		}
-		seen[item.Name] = true
-		target := filepath.Join(stage, item.Name)
-		if err := copyTree(item.Path, target); err != nil {
-			return fmt.Errorf("复制技能 %s 失败: %w", item.Name, err)
-		}
-		if _, err := os.Stat(filepath.Join(target, "SKILL.md")); err != nil {
-			return fmt.Errorf("技能 %s 没有 SKILL.md", item.Name)
-		}
+	if err := stageSkills(prepared, stage); err != nil {
+		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -92,6 +78,29 @@ func (l *Library) Install(ctx context.Context, repo string, progress func(domain
 	l.rebuild()
 	if progress != nil {
 		progress(domain.ProgressDone)
+	}
+	return nil
+}
+
+// stageSkills copies what an installer prepared into a folder of the library's
+// own, so publishing it is one rename.
+func stageSkills(prepared []domain.PreparedSkill, stage string) error {
+	seen := make(map[string]bool, len(prepared))
+	for _, item := range prepared {
+		if !domain.ValidSkillName(item.Name) {
+			return fmt.Errorf("技能名 %q 不能作为目录名", item.Name)
+		}
+		if seen[item.Name] {
+			return fmt.Errorf("技能 %s 出现了两次", item.Name)
+		}
+		seen[item.Name] = true
+		target := filepath.Join(stage, item.Name)
+		if err := copyTree(item.Path, target); err != nil {
+			return fmt.Errorf("复制技能 %s 失败: %w", item.Name, err)
+		}
+		if _, err := os.Stat(filepath.Join(target, "SKILL.md")); err != nil {
+			return fmt.Errorf("技能 %s 没有 SKILL.md", item.Name)
+		}
 	}
 	return nil
 }

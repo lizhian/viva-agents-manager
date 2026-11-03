@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lizhian/viva-agents-manager/internal/domain"
@@ -379,5 +380,130 @@ func TestOpenFolderIsUnsupported(t *testing.T) {
 	library := newLibrary(t, twoSkills())
 	if err := library.OpenFolder(); !errors.Is(err, domain.ErrUnsupported) {
 		t.Fatalf("OpenFolder = %v, want ErrUnsupported", err)
+	}
+}
+
+// TestDocumentReadsTheSkillFile checks the whole read: the file on disk becomes
+// what the detail column shows.
+func TestDocumentReadsTheSkillFile(t *testing.T) {
+	library := newLibrary(t, twoSkills())
+	if err := library.Install(context.Background(), "a/b", nil); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(library.config.Root, "a_@_b", "tdd", "SKILL.md")
+	declared := "---\nname: Declared\ndescription: From the file.\n---\n\n# Body\n"
+	if err := os.WriteFile(path, []byte(declared), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	document, err := library.Document("a_@_b", "tdd", "SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document.Name != "Declared" || document.Description != "From the file." || document.Body != "# Body\n" {
+		t.Fatalf("document = %+v, want what the file declares", document)
+	}
+}
+
+// TestDocumentRejectsNamesThatArePaths checks the one place two names are joined
+// into a path: neither may walk out of the library.
+func TestDocumentRejectsNamesThatArePaths(t *testing.T) {
+	library := newLibrary(t, twoSkills())
+	for _, names := range [][2]string{
+		{"..", "tdd"},
+		{"a_@_b", "../tdd"},
+		{"a/b", "tdd"},
+		{"", "tdd"},
+		{"a_@_b", ""},
+	} {
+		if _, err := library.Document(names[0], names[1], "SKILL.md"); !errors.Is(err, domain.ErrNoDocument) {
+			t.Fatalf("Document(%q, %q) = %v, want ErrNoDocument", names[0], names[1], err)
+		}
+	}
+}
+
+// TestDocumentReportsAMissingFile checks that a skill whose file is gone says so
+// rather than showing an empty page.
+func TestDocumentReportsAMissingFile(t *testing.T) {
+	library := newLibrary(t, twoSkills())
+	if _, err := library.Document("a_@_b", "tdd", "SKILL.md"); err == nil {
+		t.Fatal("a missing document was read")
+	}
+}
+
+// TestDocumentRefusesAHugeFile checks that one oversized file cannot stall the
+// window thread.
+func TestDocumentRefusesAHugeFile(t *testing.T) {
+	library := newLibrary(t, twoSkills())
+	if err := library.Install(context.Background(), "a/b", nil); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(library.config.Root, "a_@_b", "tdd", "SKILL.md")
+	if err := os.Truncate(path, maxDocumentSize+1); err != nil {
+		t.Fatal(err)
+	}
+	_, err := library.Document("a_@_b", "tdd", "SKILL.md")
+	if err == nil || !strings.Contains(err.Error(), "MiB") {
+		t.Fatalf("Document of an oversized file = %v, want a size complaint", err)
+	}
+}
+
+// TestDocumentReadsAnotherFileOfTheSkill checks that a file the skill links to
+// is read the same way as its own document.
+func TestDocumentReadsAnotherFileOfTheSkill(t *testing.T) {
+	library := newLibrary(t, twoSkills())
+	if err := library.Install(context.Background(), "a/b", nil); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(library.config.Root, "a_@_b", "tdd", "DEEPENING.md")
+	if err := os.WriteFile(path, []byte("# Deeper\n\nText.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	document, err := library.Document("a_@_b", "tdd", "DEEPENING.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document.Name != "" || document.Body != "# Deeper\n\nText.\n" {
+		t.Fatalf("document = %+v, want the file it names", document)
+	}
+}
+
+// TestDocumentStaysInsideTheSkill checks that a link cannot read another skill's
+// files, or anything else on the machine.
+func TestDocumentStaysInsideTheSkill(t *testing.T) {
+	library := newLibrary(t, twoSkills())
+	if err := library.Install(context.Background(), "a/b", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{
+		"",
+		"/etc/passwd",
+		"../code-review/SKILL.md",
+		"../../../../etc/passwd",
+	} {
+		if _, err := library.Document("a_@_b", "tdd", file); !errors.Is(err, domain.ErrNoDocument) {
+			t.Fatalf("Document of %q = %v, want ErrNoDocument", file, err)
+		}
+	}
+}
+
+// TestDocumentRefusesALinkThatLeavesTheSkill checks the same for a link on disk:
+// a skill someone made by hand could hold one, and it must not be followed.
+func TestDocumentRefusesALinkThatLeavesTheSkill(t *testing.T) {
+	library := newLibrary(t, twoSkills())
+	if err := library.Install(context.Background(), "a/b", nil); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "secret.md")
+	if err := os.WriteFile(outside, []byte("# Secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(library.config.Root, "a_@_b", "tdd", "leak.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := library.Document("a_@_b", "tdd", "leak.md"); !errors.Is(err, domain.ErrNoDocument) {
+		t.Fatalf("a link out of the skill was followed: %v", err)
 	}
 }

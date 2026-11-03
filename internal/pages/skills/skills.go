@@ -5,11 +5,15 @@ package skills
 import (
 	"context"
 	"errors"
+	"fmt"
+	"path"
 	"strings"
 	"sync"
 
 	"github.com/vivaui/viva/app"
+	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/flex"
+	"github.com/vivaui/viva/markdown"
 	"github.com/vivaui/viva/ui"
 
 	"github.com/lizhian/viva-agents-manager/internal/domain"
@@ -61,6 +65,16 @@ func firstChoice(sources []domain.Source) choice {
 	return choice{}
 }
 
+// pendingUpdate is what an update goroutine published for the window thread to
+// apply.
+type pendingUpdate struct {
+	// started is false when nothing was published.
+	started  bool
+	progress domain.UpdateProgress
+	done     bool
+	results  []domain.UpdateResult
+}
+
 // pending is what an install goroutine published for the window thread to apply.
 type pending struct {
 	// started is false when nothing was published, so a wake asked for by another
@@ -102,17 +116,40 @@ type Page struct {
 	installErr string
 	cancel     context.CancelFunc
 
-	// mu guards pending, which the install goroutine writes and Wake reads.
-	mu      sync.Mutex
-	pending pending
+	// The skill's own document, and the preview under it. Both draw to the
+	// canvas, so both are painted in Overlay rather than declared in Content.
+	main    reader
+	preview reader
+	// previewFile is what the preview shows, relative to the skill's directory,
+	// and empty when the preview is closed.
+	previewFile  string
+	previewSplit flex.SplitterState
+	// bodyHeight is how tall the skill's own body was the last time it was
+	// painted with no preview under it, so the preview opens at a fair height.
+	bodyHeight float32
+
+	// updating is true from the press that starts an update until its results
+	// have been applied; updateCancel stops the one in flight.
+	updating        bool
+	updateStatus    string
+	updateFailed    bool
+	updateCancelled bool
+	updateCancel    context.CancelFunc
+
+	// mu guards what the goroutines write and Wake reads.
+	mu            sync.Mutex
+	pending       pending
+	pendingUpdate pendingUpdate
 }
 
 type ids struct {
-	search  ui.ID
-	repo    ui.ID
-	install ui.ID
-	update  ui.ID
-	folder  ui.ID
+	search       ui.ID
+	repo         ui.ID
+	install      ui.ID
+	update       ui.ID
+	folder       ui.ID
+	previewSplit ui.ID
+	previewClose ui.ID
 }
 
 // New builds the page in its own identity scope, reading the store once. The
@@ -121,12 +158,16 @@ func New(tree *ui.Tree, scope ui.Scope, store domain.Store, invalidator *app.Inv
 	p := &Page{tree: tree, scope: scope, store: store, invalidator: invalidator}
 	p.split.Pos = paneWidth
 	p.ids = ids{
-		search:  tree.ID(scope, "search"),
-		repo:    tree.ID(scope, "repo"),
-		install: tree.ID(scope, "install"),
-		update:  tree.ID(scope, "update"),
-		folder:  tree.ID(scope, "folder"),
+		search:       tree.ID(scope, "search"),
+		repo:         tree.ID(scope, "repo"),
+		install:      tree.ID(scope, "install"),
+		update:       tree.ID(scope, "update"),
+		folder:       tree.ID(scope, "folder"),
+		previewSplit: tree.ID(scope, "preview-split"),
+		previewClose: tree.ID(scope, "preview-close"),
 	}
+	p.main.links = tree.Sub(scope, tree.Name("links"))
+	p.preview.links = tree.Sub(scope, tree.Name("preview-links"))
 	p.modal = kit.NewModal(tree, scope, "install")
 	p.pane = pages.Pane{Split: &p.split, Min: paneMin, Draw: p.drawPane}
 	// The callbacks are made once: they read the page, so they follow a reload
@@ -141,6 +182,7 @@ func New(tree *ui.Tree, scope ui.Scope, store domain.Store, invalidator *app.Inv
 		},
 		OnChoose: func(branch, leaf int) {
 			p.chosen = choice{source: p.sources[branch].Name, skill: p.sources[branch].Skills[leaf].Name}
+			p.load()
 		},
 	}
 	p.reload()
@@ -175,6 +217,7 @@ func (p *Page) reload() {
 	if !p.chosen.exists(p.sources) {
 		p.chosen = firstChoice(p.sources)
 	}
+	p.load()
 }
 
 // Name is the navigation label.
@@ -194,13 +237,356 @@ func (p *Page) Pane() *pages.Pane { return &p.pane }
 // Fields are the page's text fields: the search box, and the dialog's source.
 func (p *Page) Fields() []*flex.Field { return []*flex.Field{&p.search, &p.repo} }
 
-// Content paints the selected skill in the content column.
+// Content paints what the chosen skill says about itself and reserves the room
+// the bodies take. The bodies are painted in Overlay: the markdown view draws to
+// the canvas, and its rectangle is only known once the page is laid out.
 func (p *Page) Content(f *flex.Frame, theme ui.Theme) {
-	f.Column().Grow(1).Pad(28).Gap(14).Children(func() {
-		f.Text(p.Title()).FontSize(22).Bold()
-		f.Paragraph("拖动中间的分栏线调整宽度，顶部空白处可以拖动窗口。", 2).FontSize(13).Muted()
-		f.Column().Grow(1).Radius(10).Background(theme.Card).Border(1, theme.Border)
+	p.main.slotted = false
+	p.preview.slotted = false
+	f.Column().FillWidth().Grow(1).Pad(28).Gap(14).Children(func() {
+		switch {
+		case p.main.err != nil:
+			f.Text("读取技能文档失败").FontSize(22).Bold()
+			f.Paragraph(p.main.err.Error(), 3).FontSize(13).Color(theme.Danger)
+		case p.chosen.skill == "":
+			f.Text(p.Title()).FontSize(22).Bold()
+			f.Paragraph("从左边选一个技能。", 2).FontSize(13).Muted()
+		default:
+			p.drawDocuments(f, theme)
+		}
 	})
+}
+
+// drawDocuments paints the skill's own document and, when it is open, the
+// preview under it.
+func (p *Page) drawDocuments(f *flex.Frame, theme ui.Theme) {
+	if p.previewFile == "" {
+		p.main.slot = f.Slot().Grow(1).FillWidth()
+		p.main.slotted = true
+		return
+	}
+	p.main.slot = f.Slot().Height(p.previewSplit.Pos).FillWidth()
+	p.main.slotted = true
+	f.Splitter(p.ids.previewSplit, &p.previewSplit).Mins(previewMin, previewMin)
+	f.Column().Grow(1).FillWidth().Gap(8).Children(func() {
+		f.Row().FillWidth().Items(flex.Center).Gap(8).Children(func() {
+			f.Text(p.preview.document.Name).FontSize(13).Bold().Ellipsis()
+			f.Spacer()
+			if f.Button(p.ids.previewClose, "关闭").Outline().XSmall().Clicked() {
+				p.closePreview()
+			}
+		})
+		if p.preview.err != nil {
+			f.Paragraph(p.preview.err.Error(), 3).FontSize(13).Color(theme.Danger)
+			return
+		}
+		p.preview.slot = f.Slot().Grow(1).FillWidth()
+		p.preview.slotted = true
+	})
+}
+
+// Overlay paints the documents into the room Content reserved for them.
+func (p *Page) Overlay(canvas *ui.Canvas, theme ui.Theme) {
+	if p.main.slotted {
+		p.main.paint(canvas, theme)
+		if p.previewFile == "" {
+			p.bodyHeight = p.main.area.Height
+		}
+	}
+	if p.preview.slotted {
+		p.preview.paint(canvas, theme)
+	}
+	p.followLinks(canvas)
+}
+
+// followLinks opens what a reader's link points at: a file of the skill in the
+// preview, anything else in the browser.
+func (p *Page) followLinks(canvas *ui.Canvas) {
+	for _, r := range []*reader{&p.preview, &p.main} {
+		target, ok := r.clicked(canvas)
+		if !ok {
+			continue
+		}
+		if file, local := domain.LinkTarget(target); local {
+			p.openPreview(file)
+			return
+		}
+		_ = app.OpenURL(target)
+		return
+	}
+}
+
+// Scroll moves the document the pointer is over.
+func (p *Page) Scroll(event ui.ScrollEvent) ui.EventResult {
+	if p.preview.slotted && covers(p.preview.area, event.X, event.Y) {
+		return p.preview.scroll.Wheel(event)
+	}
+	if !p.main.slotted {
+		return ui.EventResult{}
+	}
+	return p.main.scroll.Wheel(event)
+}
+
+// Pointer selects the text of a document: a press starts a selection, a drag
+// extends it, and a release that chose something swallows the click so a link
+// under the pointer does not open.
+func (p *Page) Pointer(event ui.PointerEvent) ui.EventResult {
+	point := ui.Point{X: event.X, Y: event.Y}
+	switch event.Kind {
+	case ui.PointerDown:
+		r := p.readerAt(event.X, event.Y)
+		if r == nil {
+			return ui.EventResult{}
+		}
+		p.clearSelections(r)
+		if !r.selectAt(point) {
+			return ui.EventResult{}
+		}
+		return ui.EventResult{Repaint: true}
+	case ui.PointerMove:
+		r := p.selectingReader()
+		if r == nil {
+			return ui.EventResult{}
+		}
+		r.extendTo(point)
+		return ui.EventResult{Repaint: true}
+	case ui.PointerUp:
+		r := p.selectingReader()
+		if r == nil {
+			return ui.EventResult{}
+		}
+		r.extendTo(point)
+		if r.finish() {
+			// A drag is not a click: it must not open the link it ended on.
+			return ui.EventResult{Handled: true, Repaint: true}
+		}
+		return ui.EventResult{Repaint: true}
+	}
+	return ui.EventResult{}
+}
+
+// Shortcut copies the text the reader has chosen.
+func (p *Page) Shortcut(event ui.KeyEvent) ui.EventResult {
+	if event.Text != "c" || event.Modifiers&(ui.ModifierMeta|ui.ModifierControl) == 0 {
+		return ui.EventResult{}
+	}
+	for _, r := range []*reader{&p.main, &p.preview} {
+		if text := r.selected(); text != "" {
+			return ui.EventResult{Handled: true, ClipboardText: text}
+		}
+	}
+	return ui.EventResult{}
+}
+
+// readerAt is the document under a window point, or nil.
+func (p *Page) readerAt(x, y float32) *reader {
+	if p.preview.slotted && covers(p.preview.area, x, y) {
+		return &p.preview
+	}
+	if p.main.slotted && covers(p.main.area, x, y) {
+		return &p.main
+	}
+	return nil
+}
+
+// selectingReader is the document whose selection is being dragged out.
+func (p *Page) selectingReader() *reader {
+	for _, r := range []*reader{&p.preview, &p.main} {
+		if r.selecting {
+			return r
+		}
+	}
+	return nil
+}
+
+// clearSelections drops what the other document had chosen.
+func (p *Page) clearSelections(keep *reader) {
+	for _, r := range []*reader{&p.main, &p.preview} {
+		if r == keep {
+			continue
+		}
+		r.selection = components.MarkdownSelection{}
+		r.selecting = false
+	}
+}
+
+// selectAt begins a selection at a window point.
+func (r *reader) selectAt(point ui.Point) bool {
+	offset, ok := r.view.OffsetAt(point)
+	if !ok {
+		return false
+	}
+	r.selection = components.MarkdownSelection{Anchor: offset, Focus: offset}
+	r.selecting = true
+	return true
+}
+
+// extendTo moves the end of the selection to a window point.
+func (r *reader) extendTo(point ui.Point) {
+	if !r.selecting {
+		return
+	}
+	if offset, ok := r.view.OffsetAt(point); ok {
+		r.selection.Focus = offset
+	}
+}
+
+// finish ends the selection, reporting whether it holds any text.
+func (r *reader) finish() bool {
+	r.selecting = false
+	return r.selection.Anchor != r.selection.Focus
+}
+
+// selected is the text the selection holds.
+func (r *reader) selected() string {
+	if r.selection.Anchor == r.selection.Focus {
+		return ""
+	}
+	return r.view.SelectedText(r.selection)
+}
+
+// load reads the chosen skill's own document. It runs when the choice changes and
+// after the library is reloaded, so a SKILL.md edited by hand shows up on the
+// next click.
+func (p *Page) load() {
+	p.closePreview()
+	if p.chosen.skill == "" {
+		p.main = reader{links: p.main.links}
+		return
+	}
+	p.main.read(p.store, p.chosen.source, p.chosen.skill, "SKILL.md", p.chosen.skill)
+	p.main.render(true)
+}
+
+// openPreview shows a file of the chosen skill under its own document.
+func (p *Page) openPreview(file string) {
+	if file == "" || file == p.previewFile {
+		return
+	}
+	p.previewFile = file
+	p.preview.read(p.store, p.chosen.source, p.chosen.skill, file, path.Base(file))
+	p.preview.render(false)
+	p.previewSplit.Pos = p.mainTop()
+}
+
+// mainTop is how tall the skill's own document stays once the preview opens.
+func (p *Page) mainTop() float32 {
+	if p.bodyHeight <= previewHeight {
+		return previewMin
+	}
+	return p.bodyHeight - previewHeight
+}
+
+// closePreview gives the skill's own document the whole height back.
+func (p *Page) closePreview() {
+	p.previewFile = ""
+	p.preview = reader{links: p.preview.links}
+	p.previewSplit.Pos = 0
+}
+
+// reader is one document column: what it shows, how far it is scrolled, and the
+// view that paints it.
+type reader struct {
+	document domain.Document
+	err      error
+	parsed   markdown.Document
+	view     components.MarkdownView
+	scroll   flex.ScrollState
+	links    ui.Scope
+	// slot is where the body goes, and slotted says Content reserved it this
+	// frame: a Box from an older frame must never be read.
+	slot    flex.Box
+	slotted bool
+	// width is the width the body was last laid out at, height the height it came
+	// out at, and area where it was painted.
+	width  float32
+	height float32
+	area   ui.Rect
+	// selection is the text the reader has chosen, and selecting says a drag is
+	// still choosing it.
+	selection components.MarkdownSelection
+	selecting bool
+}
+
+// read loads one file of the skill into the reader.
+func (r *reader) read(store domain.Store, source, skill, file, fallback string) {
+	*r = reader{links: r.links}
+	document, err := store.Document(source, skill, file)
+	if err != nil {
+		r.err = err
+		return
+	}
+	if document.Name == "" {
+		document.Name = fallback
+	}
+	r.document = document
+}
+
+// render lays the document out as markdown. With heading, what the document
+// declares about itself goes on top as its own title and summary, so they scroll
+// and select with the body instead of standing still above it.
+func (r *reader) render(heading bool) {
+	var source strings.Builder
+	if heading {
+		source.WriteString("# " + r.document.Name + "\n\n")
+		if r.document.Description != "" {
+			source.WriteString(r.document.Description + "\n\n")
+		}
+	}
+	source.WriteString(r.document.Body)
+	r.parsed.Parse(domain.RewriteLinks(source.String()))
+}
+
+// paint draws the body into the room Content reserved for it.
+func (r *reader) paint(canvas *ui.Canvas, theme ui.Theme) {
+	area := r.slot.Rect()
+	if area.Width <= 0 || area.Height <= 0 {
+		return
+	}
+	r.area = area
+	r.scroll.Viewport = area.Height
+	// Laying the body out measures its text, which is the expensive half: it is
+	// only worth doing when the width changed.
+	if r.width != area.Width {
+		r.height, r.width = r.view.Layout(canvas, markdownStyle(), &r.parsed, area.Width), area.Width
+	}
+	r.scroll.Content = r.height
+	if r.scroll.Offset > r.scroll.Max() {
+		r.scroll.Offset = r.scroll.Max()
+	}
+	r.view.Paint(canvas, components.MarkdownPaint{
+		Look: components.MarkdownLookFor(theme),
+		X:    area.X, Y: area.Y - r.scroll.Offset,
+		Clip: area, Links: r.links, Selection: r.selection,
+	})
+}
+
+// clicked is the destination of the link this paint delivered a click on.
+func (r *reader) clicked(canvas *ui.Canvas) (string, bool) {
+	index, ok := canvas.ClickedIn(r.links)
+	if !ok {
+		return "", false
+	}
+	target := r.view.Link(index)
+	return target, target != ""
+}
+
+// covers reports whether the point is inside the rectangle.
+func covers(area ui.Rect, x, y float32) bool {
+	return x >= area.X && x < area.X+area.Width && y >= area.Y && y < area.Y+area.Height
+}
+
+// The sizes the documents are set in, and the room the preview takes.
+const (
+	bodySize      = 13
+	bodyLeading   = 19
+	previewHeight = 260
+	previewMin    = 120
+)
+
+// markdownStyle is how a skill's body is typeset.
+func markdownStyle() components.MarkdownStyle {
+	return components.MarkdownStyle{Size: bodySize, LineHeight: bodyLeading}
 }
 
 // Dialog paints the install dialog while it is open. An install runs for as long
@@ -251,6 +637,15 @@ func (p *Page) drawPane(f *flex.Frame, theme ui.Theme, width float32) {
 			Items(flex.Center).Gap(6).MovesWindow().Children(func() {
 			p.buttons(f)
 		})
+		if p.updateStatus != "" {
+			color := theme.MutedForeground
+			if p.updateFailed {
+				color = theme.Danger
+			}
+			f.Column().PadSides(2, searchInset, 2, searchInset).Children(func() {
+				f.Paragraph(p.updateStatus, 2).FontSize(11).Color(color)
+			})
+		}
 		f.Column().PadSides(0, searchInset, searchInset, searchInset).Children(func() {
 			f.Field(&p.search, p.ids.search, "搜索 Skills", "搜索 skills…").FillWidth()
 		})
@@ -260,11 +655,22 @@ func (p *Page) drawPane(f *flex.Frame, theme ui.Theme, width float32) {
 
 // buttons draws what can be done to the library as a whole.
 func (p *Page) buttons(f *flex.Frame) {
-	if f.Button(p.ids.install, "安装").Outline().XSmall().Clicked() {
+	if f.Button(p.ids.install, "安装").Outline().XSmall().Disabled(p.updating).Clicked() {
 		p.openDialog()
 	}
-	// Nothing refreshes an installed source yet.
-	f.Button(p.ids.update, "更新").Outline().XSmall().Disabled(true)
+	// While the library updates, the same button stops it: a run that takes half a
+	// minute needs a way out.
+	label := "更新"
+	if p.updating {
+		label = "取消"
+	}
+	if f.Button(p.ids.update, label).Outline().XSmall().Disabled(p.installing).Clicked() {
+		if p.updating {
+			p.cancelUpdate()
+		} else {
+			p.startUpdate()
+		}
+	}
 	// Viva cannot reveal a directory yet, so the button is drawn unclickable
 	// rather than pressed to no effect. See domain.ErrUnsupported.
 	f.Button(p.ids.folder, "本地文件夹").Outline().XSmall().Disabled(true)
@@ -303,6 +709,7 @@ func (p *Page) toggleBranch(branch int) {
 // openDialog shows the dialog with a clean slate.
 func (p *Page) openDialog() {
 	p.installErr = ""
+	p.updateStatus = ""
 	p.modal.Open = true
 }
 
@@ -351,8 +758,106 @@ func (p *Page) cancelInstall() {
 	}
 }
 
-// Wake applies whatever the install goroutine published.
+// startUpdate fetches every source again off the window thread. It reports back
+// through Wake like an install does.
+func (p *Page) startUpdate() {
+	ctx, cancel := context.WithCancel(context.Background())
+	p.updateCancel = cancel
+	p.updating = true
+	p.updateFailed = false
+	p.updateCancelled = false
+	p.updateStatus = "正在更新…"
+	go func() {
+		results := p.store.UpdateAll(ctx, func(progress domain.UpdateProgress) {
+			p.publishUpdate(pendingUpdate{started: true, progress: progress})
+		})
+		p.publishUpdate(pendingUpdate{started: true, done: true, results: results})
+	}()
+}
+
+// publishUpdate hands a result to the window thread and asks for the repaint
+// that applies it.
+func (p *Page) publishUpdate(result pendingUpdate) {
+	p.mu.Lock()
+	p.pendingUpdate = result
+	p.mu.Unlock()
+	if p.invalidator != nil {
+		p.invalidator.Invalidate()
+	}
+}
+
+// cancelUpdate asks the update in flight to stop. The sources it already
+// replaced stay replaced.
+func (p *Page) cancelUpdate() {
+	p.updateCancelled = true
+	if p.updateCancel != nil {
+		p.updateCancel()
+	}
+}
+
+// wakeUpdate applies what the update goroutine published.
+func (p *Page) wakeUpdate() {
+	p.mu.Lock()
+	result := p.pendingUpdate
+	p.pendingUpdate = pendingUpdate{}
+	p.mu.Unlock()
+	if !result.started {
+		return
+	}
+	if !result.done {
+		p.updateStatus = updateProgressLabel(result.progress)
+		return
+	}
+	p.updating = false
+	p.updateCancel = nil
+	p.updateStatus, p.updateFailed = updateResultLabel(result.results, p.updateCancelled)
+	p.reload()
+}
+
+// updateProgressLabel is what the status line says while the library updates.
+func updateProgressLabel(progress domain.UpdateProgress) string {
+	return fmt.Sprintf("正在更新 %d/%d · %s", progress.Done+1, progress.Total, progress.Source)
+}
+
+// updateResultLabel is what the status line says once the update is over, and
+// whether it is bad news.
+func updateResultLabel(results []domain.UpdateResult, cancelled bool) (string, bool) {
+	if len(results) == 0 {
+		if cancelled {
+			return "已取消", false
+		}
+		return "没有可更新的来源", false
+	}
+	failed := 0
+	var first domain.UpdateResult
+	for _, result := range results {
+		if result.Err == nil {
+			continue
+		}
+		if failed == 0 {
+			first = result
+		}
+		failed++
+	}
+	switch {
+	case failed == 0:
+		return fmt.Sprintf("%d 个来源已更新", len(results)), false
+	case cancelled || errors.Is(first.Err, context.Canceled):
+		return fmt.Sprintf("已取消，%d 个来源已更新", len(results)-failed), false
+	default:
+		message := fmt.Sprintf("%s — %s", first.Source, failureMessage(first.Err))
+		return fmt.Sprintf("%d 个来源已更新，%d 个失败：%s", len(results)-failed, failed, message), true
+	}
+}
+
+// Wake applies whatever the background work published.
 func (p *Page) Wake() {
+	p.wakeInstall()
+	p.wakeUpdate()
+}
+
+// wakeInstall applies what the install goroutine published.
+func (p *Page) wakeInstall() {
 	p.mu.Lock()
 	result := p.pending
 	p.pending = pending{}
@@ -371,7 +876,7 @@ func (p *Page) Wake() {
 		// The reader stopped it; there is nothing to report.
 		p.modal.Open = false
 	case result.err != nil:
-		p.installErr = installMessage(result.err)
+		p.installErr = failureMessage(result.err)
 	default:
 		p.modal.Open = false
 		p.repo.SetText("")
@@ -391,9 +896,9 @@ func progressLabel(progress domain.Progress) string {
 	}
 }
 
-// installMessage turns a failed install into the sentence the dialog shows. The
-// copy lives here, not in the domain, so the model stays free of it.
-func installMessage(err error) string {
+// failureMessage turns a failed install or update into the sentence the reader
+// sees. The copy lives here, not in the domain, so the model stays free of it.
+func failureMessage(err error) string {
 	switch {
 	case errors.Is(err, domain.ErrEmptyRepo):
 		return "请填写仓库"

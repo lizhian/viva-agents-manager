@@ -12,8 +12,6 @@ import (
 type Page interface {
 	// Name is the navigation label.
 	Name() string
-	// Title is what the content toolbar shows.
-	Title() string
 	// Pane is the page's own column beside the content, or nil.
 	Pane() *Pane
 	// Fields are the page's text fields, which the shell hands to the platform so
@@ -23,6 +21,19 @@ type Page interface {
 	Content(f *flex.Frame, theme ui.Theme)
 	// Dialog paints the page's modal over the window, if it has one open.
 	Dialog(f *flex.Frame, theme ui.Theme)
+	// Overlay paints what the page draws itself, after the layout its Content
+	// declared. A component that draws straight to the canvas is not a flex node,
+	// so the rectangle Content reserved for it is only known once the page is laid
+	// out; the shell calls this then.
+	Overlay(canvas *ui.Canvas, theme ui.Theme)
+	// Scroll gives the wheel to the page, so what it draws itself can move.
+	Scroll(event ui.ScrollEvent) ui.EventResult
+	// Pointer gives a pointer event to the page, so what it draws itself can be
+	// selected.
+	Pointer(event ui.PointerEvent) ui.EventResult
+	// Shortcut gives a Control- or Meta-modified chord to the page, so what it
+	// draws itself can be copied.
+	Shortcut(event ui.KeyEvent) ui.EventResult
 	// Wake runs on the window thread before a repaint that background work asked
 	// for, and is where a page moves what that work published into its own state.
 	Wake()
@@ -49,6 +60,18 @@ func (Base) Fields() []*flex.Field { return nil }
 
 // Dialog reports that the page has no modal.
 func (Base) Dialog(*flex.Frame, ui.Theme) {}
+
+// Overlay reports that the page draws nothing itself.
+func (Base) Overlay(*ui.Canvas, ui.Theme) {}
+
+// Scroll reports that the page has nothing of its own to scroll.
+func (Base) Scroll(ui.ScrollEvent) ui.EventResult { return ui.EventResult{} }
+
+// Pointer reports that the page draws nothing that can be selected.
+func (Base) Pointer(ui.PointerEvent) ui.EventResult { return ui.EventResult{} }
+
+// Shortcut reports that the page owns no chords.
+func (Base) Shortcut(ui.KeyEvent) ui.EventResult { return ui.EventResult{} }
 
 // Wake reports that the page has no background work to apply.
 func (Base) Wake() {}
