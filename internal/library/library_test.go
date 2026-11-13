@@ -58,10 +58,11 @@ func newLibrary(t *testing.T, installer domain.Installer) *Library {
 	t.Helper()
 	dir := t.TempDir()
 	library, err := New(Config{
-		Root:      filepath.Join(dir, "skills"),
-		Tmp:       filepath.Join(dir, ".tmp"),
-		DBPath:    filepath.Join(dir, "sqlite.db"),
-		Installer: installer,
+		Root:       filepath.Join(dir, "skills"),
+		EnabledDir: filepath.Join(dir, "enabled"),
+		Tmp:        filepath.Join(dir, ".tmp"),
+		DBPath:     filepath.Join(dir, "sqlite.db"),
+		Installer:  installer,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +93,7 @@ func TestInstallMigratesIntoTheLibrary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	source := filepath.Join(library.config.Root, "mattpocock_@_skills")
+	source := filepath.Join(library.config.Root, "mattpocock@skills")
 	for _, skill := range []string{"tdd", "code-review"} {
 		if _, err := os.Stat(filepath.Join(source, skill, "SKILL.md")); err != nil {
 			t.Fatalf("%s was not migrated: %v", skill, err)
@@ -168,7 +169,7 @@ func TestInstallFailureLeavesNothing(t *testing.T) {
 	if err := library.Install(context.Background(), "a/b", nil); !errors.Is(err, failure) {
 		t.Fatalf("install = %v, want the installer's error", err)
 	}
-	if _, err := os.Stat(filepath.Join(library.config.Root, "a_@_b")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(library.config.Root, "a@b")); !os.IsNotExist(err) {
 		t.Fatal("a failed install left a mirror behind")
 	}
 	if sources := library.Sources(); len(sources) != 0 {
@@ -195,7 +196,7 @@ func TestInstallRefusesBadSkillNames(t *testing.T) {
 		if err := library.Install(context.Background(), "a/b", nil); err == nil {
 			t.Fatalf("installing a skill named %q was accepted", name)
 		}
-		if _, err := os.Stat(filepath.Join(library.config.Root, "a_@_b")); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(library.config.Root, "a@b")); !os.IsNotExist(err) {
 			t.Fatalf("skill %q left a mirror behind", name)
 		}
 	}
@@ -254,10 +255,11 @@ func TestScanSkipsFoldersWithNoSkill(t *testing.T) {
 func TestIndexFollowsTheDisk(t *testing.T) {
 	dir := t.TempDir()
 	config := Config{
-		Root:      filepath.Join(dir, "skills"),
-		Tmp:       filepath.Join(dir, ".tmp"),
-		DBPath:    filepath.Join(dir, "sqlite.db"),
-		Installer: twoSkills(),
+		Root:       filepath.Join(dir, "skills"),
+		EnabledDir: filepath.Join(dir, "enabled"),
+		Tmp:        filepath.Join(dir, ".tmp"),
+		DBPath:     filepath.Join(dir, "sqlite.db"),
+		Installer:  twoSkills(),
 	}
 	first, err := New(config)
 	if err != nil {
@@ -279,7 +281,7 @@ func TestIndexFollowsTheDisk(t *testing.T) {
 		t.Fatalf("source count = %d, want 1 after reopening", len(sources))
 	}
 
-	if err := os.RemoveAll(filepath.Join(config.Root, "a_@_b")); err != nil {
+	if err := os.RemoveAll(filepath.Join(config.Root, "a@b")); err != nil {
 		t.Fatal(err)
 	}
 	if err := second.Close(); err != nil {
@@ -307,10 +309,11 @@ func TestNewClearsTheTemporaryFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	library, err := New(Config{
-		Root:      filepath.Join(dir, "skills"),
-		Tmp:       tmp,
-		DBPath:    filepath.Join(dir, "sqlite.db"),
-		Installer: twoSkills(),
+		Root:       filepath.Join(dir, "skills"),
+		EnabledDir: filepath.Join(dir, "enabled"),
+		Tmp:        tmp,
+		DBPath:     filepath.Join(dir, "sqlite.db"),
+		Installer:  twoSkills(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -374,15 +377,6 @@ func TestCopyTreeRefusesAnEscapingLink(t *testing.T) {
 	}
 }
 
-// TestOpenFolderIsUnsupported pins the framework gap: Viva cannot reveal a
-// directory, so the store says so rather than pretending.
-func TestOpenFolderIsUnsupported(t *testing.T) {
-	library := newLibrary(t, twoSkills())
-	if err := library.OpenFolder(); !errors.Is(err, domain.ErrUnsupported) {
-		t.Fatalf("OpenFolder = %v, want ErrUnsupported", err)
-	}
-}
-
 // TestDocumentReadsTheSkillFile checks the whole read: the file on disk becomes
 // what the detail column shows.
 func TestDocumentReadsTheSkillFile(t *testing.T) {
@@ -390,13 +384,13 @@ func TestDocumentReadsTheSkillFile(t *testing.T) {
 	if err := library.Install(context.Background(), "a/b", nil); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(library.config.Root, "a_@_b", "tdd", "SKILL.md")
+	path := filepath.Join(library.config.Root, "a@b", "tdd", "SKILL.md")
 	declared := "---\nname: Declared\ndescription: From the file.\n---\n\n# Body\n"
 	if err := os.WriteFile(path, []byte(declared), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	document, err := library.Document("a_@_b", "tdd", "SKILL.md")
+	document, err := library.Document("a@b", "tdd", "SKILL.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,10 +405,10 @@ func TestDocumentRejectsNamesThatArePaths(t *testing.T) {
 	library := newLibrary(t, twoSkills())
 	for _, names := range [][2]string{
 		{"..", "tdd"},
-		{"a_@_b", "../tdd"},
+		{"a@b", "../tdd"},
 		{"a/b", "tdd"},
 		{"", "tdd"},
-		{"a_@_b", ""},
+		{"a@b", ""},
 	} {
 		if _, err := library.Document(names[0], names[1], "SKILL.md"); !errors.Is(err, domain.ErrNoDocument) {
 			t.Fatalf("Document(%q, %q) = %v, want ErrNoDocument", names[0], names[1], err)
@@ -426,7 +420,7 @@ func TestDocumentRejectsNamesThatArePaths(t *testing.T) {
 // rather than showing an empty page.
 func TestDocumentReportsAMissingFile(t *testing.T) {
 	library := newLibrary(t, twoSkills())
-	if _, err := library.Document("a_@_b", "tdd", "SKILL.md"); err == nil {
+	if _, err := library.Document("a@b", "tdd", "SKILL.md"); err == nil {
 		t.Fatal("a missing document was read")
 	}
 }
@@ -438,11 +432,11 @@ func TestDocumentRefusesAHugeFile(t *testing.T) {
 	if err := library.Install(context.Background(), "a/b", nil); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(library.config.Root, "a_@_b", "tdd", "SKILL.md")
+	path := filepath.Join(library.config.Root, "a@b", "tdd", "SKILL.md")
 	if err := os.Truncate(path, maxDocumentSize+1); err != nil {
 		t.Fatal(err)
 	}
-	_, err := library.Document("a_@_b", "tdd", "SKILL.md")
+	_, err := library.Document("a@b", "tdd", "SKILL.md")
 	if err == nil || !strings.Contains(err.Error(), "MiB") {
 		t.Fatalf("Document of an oversized file = %v, want a size complaint", err)
 	}
@@ -455,12 +449,12 @@ func TestDocumentReadsAnotherFileOfTheSkill(t *testing.T) {
 	if err := library.Install(context.Background(), "a/b", nil); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(library.config.Root, "a_@_b", "tdd", "DEEPENING.md")
+	path := filepath.Join(library.config.Root, "a@b", "tdd", "DEEPENING.md")
 	if err := os.WriteFile(path, []byte("# Deeper\n\nText.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	document, err := library.Document("a_@_b", "tdd", "DEEPENING.md")
+	document, err := library.Document("a@b", "tdd", "DEEPENING.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +476,7 @@ func TestDocumentStaysInsideTheSkill(t *testing.T) {
 		"../code-review/SKILL.md",
 		"../../../../etc/passwd",
 	} {
-		if _, err := library.Document("a_@_b", "tdd", file); !errors.Is(err, domain.ErrNoDocument) {
+		if _, err := library.Document("a@b", "tdd", file); !errors.Is(err, domain.ErrNoDocument) {
 			t.Fatalf("Document of %q = %v, want ErrNoDocument", file, err)
 		}
 	}
@@ -499,11 +493,11 @@ func TestDocumentRefusesALinkThatLeavesTheSkill(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("# Secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(library.config.Root, "a_@_b", "tdd", "leak.md")
+	link := filepath.Join(library.config.Root, "a@b", "tdd", "leak.md")
 	if err := os.Symlink(outside, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := library.Document("a_@_b", "tdd", "leak.md"); !errors.Is(err, domain.ErrNoDocument) {
+	if _, err := library.Document("a@b", "tdd", "leak.md"); !errors.Is(err, domain.ErrNoDocument) {
 		t.Fatalf("a link out of the skill was followed: %v", err)
 	}
 }

@@ -1,7 +1,7 @@
 package kit
 
 import (
-	"github.com/vivaui/viva/flex"
+	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/ui"
 )
 
@@ -32,14 +32,14 @@ const (
 // version and the theme button.
 type Nav struct {
 	Items    []string
-	ItemID   func(index int) ui.ID
-	ToggleID ui.ID
+	ItemID   func(index int) gfx.ID
+	ToggleID gfx.ID
 	Theme    *Theme
 }
 
 // Natural is the width that fits the widest item, measured with the canvas so
 // the column fits whatever font the platform uses.
-func (n *Nav) Natural(canvas *ui.Canvas) float32 {
+func (n *Nav) Natural(canvas *gfx.Canvas) float32 {
 	widest := float32(0)
 	for _, name := range n.Items {
 		widest = max(widest, canvas.TextWidth(name, navFontSize))
@@ -49,29 +49,29 @@ func (n *Nav) Natural(canvas *ui.Canvas) float32 {
 
 // Draw paints the column at the given width. onSelect runs on the paint that
 // delivers a click on an item.
-func (n *Nav) Draw(f *flex.Frame, width float32, selected int, onSelect func(index int)) {
+func (n *Nav) Draw(f ui.C, width float32, selected int, onSelect func(index int)) {
 	theme := n.Theme.Current()
-	f.Column().Width(width).Background(theme.Card).Children(func() {
+	ui.Column(f).Width(width).Background(theme.Card).Children(func() {
 		// The strip the traffic lights sit in, and the place the window is dragged
 		// from. It carries no title: the window has no title bar.
-		f.Row().Height(Titlebar).MovesWindow()
-		f.Column().Grow(1).PadSides(4, navPadX, 12, navPadX).Gap(2).Children(func() {
+		ui.Row(f).Height(Titlebar).MovesWindow()
+		ui.Column(f).Grow(1).PadSides(4, navPadX, 12, navPadX).Gap(2).Children(func() {
 			for i, name := range n.Items {
-				item := f.Row().PadSides(7, navItemPadX, 7, navItemPadX).Radius(6).
-					HoverBackground(theme.Hover).Hit(n.ItemID(i), name)
+				item := ui.Row(f).PadSides(7, navItemPadX, 7, navItemPadX).Radius(6).
+					Hover(ui.Look{}.Background(theme.Hover)).Hit(n.ItemID(i), name)
 				if i == selected {
 					item.Background(theme.Secondary)
 				}
 				if item.Children(func() {
-					f.Text(name).FontSize(navFontSize).FillWidth().Ellipsis()
+					ui.Text(f, name).FontSize(navFontSize).FillWidth().Ellipsis()
 				}).Clicked() {
 					onSelect(i)
 				}
 			}
 		})
-		f.Row().Height(36).PadSides(0, 10, 0, 14).Items(flex.Center).Children(func() {
-			f.Text("v0.1.0").FontSize(11).Muted()
-			f.Spacer()
+		ui.Row(f).Height(36).PadSides(0, 10, 0, 14).Items(ui.Center).Children(func() {
+			ui.Text(f, "v0.1.0").FontSize(11).Muted()
+			ui.Spacer(f)
 			spec := IconButtonSpec{ID: n.ToggleID, Label: n.Theme.Label(), Icon: n.Theme.Icon()}
 			if IconButton(f, theme, spec) {
 				n.Theme.Toggle()

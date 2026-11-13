@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/vivaui/viva/app"
-	"github.com/vivaui/viva/ui"
+	"github.com/vivaui/viva/gfx"
 
 	"github.com/lizhian/viva-agents-manager/internal/domain"
 	"github.com/lizhian/viva-agents-manager/internal/kit"
@@ -28,7 +28,7 @@ func newWindow(t *testing.T) (*Shell, *app.Driver) {
 func newWindowWith(t *testing.T, store domain.Store) (*Shell, *app.Driver) {
 	t.Helper()
 	window := New(store)
-	var canvas ui.Canvas
+	var canvas gfx.Canvas
 	driver, err := app.NewDriver(window.Config(), &canvas)
 	if err != nil {
 		t.Fatal(err)
@@ -98,10 +98,11 @@ func newLibraryWindow(t *testing.T) (*Shell, *app.Driver, string) {
 	t.Helper()
 	dir := t.TempDir()
 	store, err := library.New(library.Config{
-		Root:      filepath.Join(dir, "skills"),
-		Tmp:       filepath.Join(dir, ".tmp"),
-		DBPath:    filepath.Join(dir, "sqlite.db"),
-		Installer: stubInstaller{},
+		Root:       filepath.Join(dir, "skills"),
+		EnabledDir: filepath.Join(dir, "enabled"),
+		Tmp:        filepath.Join(dir, ".tmp"),
+		DBPath:     filepath.Join(dir, "sqlite.db"),
+		Installer:  stubInstaller{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -134,13 +135,13 @@ func settle(t *testing.T, driver *app.Driver, done func() bool) {
 // drag moves the pointer from one x to another along the splitter row.
 func drag(t *testing.T, driver *app.Driver, from, to float32) {
 	t.Helper()
-	if err := driver.Press(from, 300, ui.PointerButtonPrimary); err != nil {
+	if err := driver.Press(from, 300, gfx.PointerButtonPrimary); err != nil {
 		t.Fatal(err)
 	}
 	if err := driver.Move(to, 300); err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.Release(to, 300, ui.PointerButtonPrimary); err != nil {
+	if err := driver.Release(to, 300, gfx.PointerButtonPrimary); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -162,7 +163,7 @@ func clickLabel(t *testing.T, driver *app.Driver, label string) {
 }
 
 // hitBounds is the rectangle of the first hit region with that label.
-func hitBounds(t *testing.T, driver *app.Driver, label string) ui.Rect {
+func hitBounds(t *testing.T, driver *app.Driver, label string) gfx.Rect {
 	t.Helper()
 	for _, hit := range driver.Snapshot().Hits {
 		if hit.Label == label {
@@ -170,12 +171,12 @@ func hitBounds(t *testing.T, driver *app.Driver, label string) ui.Rect {
 		}
 	}
 	t.Fatalf("no hit region labelled %q", label)
-	return ui.Rect{}
+	return gfx.Rect{}
 }
 
 // horizontalBar is the divider that splits a column in two: the one labelled
 // "Resize panes" that is a strip rather than a full-height line.
-func horizontalBar(t *testing.T, driver *app.Driver) ui.Rect {
+func horizontalBar(t *testing.T, driver *app.Driver) gfx.Rect {
 	t.Helper()
 	for _, hit := range driver.Snapshot().Hits {
 		if hit.Label == "Resize panes" && hit.Bounds.Height < 20 {
@@ -183,7 +184,7 @@ func horizontalBar(t *testing.T, driver *app.Driver) ui.Rect {
 		}
 	}
 	t.Fatal("no horizontal divider is drawn")
-	return ui.Rect{}
+	return gfx.Rect{}
 }
 
 // drawn reports whether the frame draws that text.
@@ -281,14 +282,14 @@ func TestThemeToggle(t *testing.T) {
 	if !window.theme.Dark() {
 		t.Fatal("the click did not switch to the dark theme")
 	}
-	if got, want := driver.Snapshot().Primitives[0].Color, ui.DarkTheme().Background; got != want {
+	if got, want := driver.Snapshot().Primitives[0].Color, gfx.DarkTheme().Background; got != want {
 		t.Fatalf("background after the click = %v, want %v", got, want)
 	}
 	clickLabel(t, driver, window.nav.Theme.Label())
 	if window.theme.Dark() {
 		t.Fatal("the second click did not return to the light theme")
 	}
-	if got, want := driver.Snapshot().Primitives[0].Color, ui.LightTheme().Background; got != want {
+	if got, want := driver.Snapshot().Primitives[0].Color, gfx.LightTheme().Background; got != want {
 		t.Fatalf("background after the second click = %v, want %v", got, want)
 	}
 }
@@ -388,7 +389,7 @@ func TestPaneButtonsSitAboveTheSearchBox(t *testing.T) {
 
 	search := hitBounds(t, driver, "搜索 Skills")
 	right := window.split.Pos + kit.SplitterWidth + pane.Split.Pos
-	for _, label := range []string{"安装", "更新", "本地文件夹"} {
+	for _, label := range []string{"安装", "更新", "本地文件夹", "全部收起"} {
 		hit := hitBounds(t, driver, label)
 		if hit.Y+hit.Height > search.Y {
 			t.Fatalf("%q is not above the search box", label)
@@ -452,7 +453,7 @@ func TestSkillDetailScrolls(t *testing.T) {
 	if drawn(t, driver, "The last heading") {
 		t.Fatal("the end of the body is on screen before scrolling")
 	}
-	if err := driver.Scroll(ui.ScrollEvent{X: 800, Y: 400, DeltaY: 4000}); err != nil {
+	if err := driver.Scroll(gfx.ScrollEvent{X: 800, Y: 400, DeltaY: 4000}); err != nil {
 		t.Fatal(err)
 	}
 	if !drawn(t, driver, "The last heading") {
@@ -466,7 +467,7 @@ func TestSkillDetailReportsAReadFailure(t *testing.T) {
 	_, driver, root := newLibraryWindow(t)
 	installStub(t, driver)
 
-	if err := os.Remove(filepath.Join(root, "owner_@_repo", "alpha", "SKILL.md")); err != nil {
+	if err := os.Remove(filepath.Join(root, "owner@repo", "alpha", "SKILL.md")); err != nil {
 		t.Fatal(err)
 	}
 	clickLabel(t, driver, "tdd")
@@ -526,13 +527,13 @@ func TestPreviewSplitterDrag(t *testing.T) {
 	header := hitBounds(t, driver, "关闭")
 	bar := horizontalBar(t, driver)
 	x, y := bar.X+bar.Width/2, bar.Y+bar.Height/2
-	if err := driver.Press(x, y, ui.PointerButtonPrimary); err != nil {
+	if err := driver.Press(x, y, gfx.PointerButtonPrimary); err != nil {
 		t.Fatal(err)
 	}
 	if err := driver.Move(x, y-60); err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.Release(x, y-60, ui.PointerButtonPrimary); err != nil {
+	if err := driver.Release(x, y-60, gfx.PointerButtonPrimary); err != nil {
 		t.Fatal(err)
 	}
 
@@ -556,7 +557,7 @@ func newSeededWindow(t *testing.T, installer domain.Installer) (*Shell, *app.Dri
 	t.Helper()
 	dir := t.TempDir()
 	root := filepath.Join(dir, "skills")
-	skill := filepath.Join(root, "owner_@_repo", "alpha")
+	skill := filepath.Join(root, "owner@repo", "alpha")
 	if err := os.MkdirAll(skill, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -589,7 +590,11 @@ func TestUpdateReportsItsResult(t *testing.T) {
 // TestUpdateCanBeCancelled checks that an update in flight offers to stop, and
 // that stopping says so.
 func TestUpdateCanBeCancelled(t *testing.T) {
-	_, driver := newSeededWindow(t, slowInstaller{})
+	window, driver := newSeededWindow(t, slowInstaller{})
+	// Give the toolbar enough room to show the full progress and result text.
+	pane := window.page().Pane()
+	from := window.split.Pos + kit.SplitterWidth + pane.Split.Pos + 4
+	drag(t, driver, from, from+200)
 
 	clickLabel(t, driver, "更新")
 	// Wait for the source to be in flight: stopping before it starts is a
@@ -611,7 +616,7 @@ func TestTheHeaderScrollsWithTheBody(t *testing.T) {
 	if !drawn(t, driver, "A skill the tests install.") {
 		t.Fatal("the description is not drawn")
 	}
-	if err := driver.Scroll(ui.ScrollEvent{X: 800, Y: 400, DeltaY: 4000}); err != nil {
+	if err := driver.Scroll(gfx.ScrollEvent{X: 800, Y: 400, DeltaY: 4000}); err != nil {
 		t.Fatal(err)
 	}
 	if drawn(t, driver, "A skill the tests install.") {
@@ -624,13 +629,13 @@ func TestSelectingTextCopiesIt(t *testing.T) {
 	_, driver, _ := newLibraryWindow(t)
 	installStub(t, driver)
 
-	if err := driver.Press(400, 50, ui.PointerButtonPrimary); err != nil {
+	if err := driver.Press(400, 80, gfx.PointerButtonPrimary); err != nil {
 		t.Fatal(err)
 	}
 	if err := driver.Move(700, 220); err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.Release(700, 220, ui.PointerButtonPrimary); err != nil {
+	if err := driver.Release(700, 220, gfx.PointerButtonPrimary); err != nil {
 		t.Fatal(err)
 	}
 
@@ -654,16 +659,221 @@ func TestDraggingOverALinkDoesNotOpenIt(t *testing.T) {
 
 	link := hitBounds(t, driver, "DEEPENING.md")
 	y := link.Y + link.Height/2
-	if err := driver.Press(link.X+2, y, ui.PointerButtonPrimary); err != nil {
+	if err := driver.Press(link.X+2, y, gfx.PointerButtonPrimary); err != nil {
 		t.Fatal(err)
 	}
 	if err := driver.Move(link.X+link.Width-2, y); err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.Release(link.X+link.Width-2, y, ui.PointerButtonPrimary); err != nil {
+	if err := driver.Release(link.X+link.Width-2, y, gfx.PointerButtonPrimary); err != nil {
 		t.Fatal(err)
 	}
 	if drawn(t, driver, "A file the skill links to.") {
 		t.Fatal("a drag opened the link it crossed")
 	}
+}
+
+// TestSkillSwitchesManageLinksWithoutSelectingOrFolding drives the independent
+// row controls against the real library, including a partially enabled source.
+func TestSkillSwitchesManageLinksWithoutSelectingOrFolding(t *testing.T) {
+	window, driver, root := newLibraryWindow(t)
+	installStub(t, driver)
+	title := window.page().(interface{ Title() string }).Title()
+	enabledDir := filepath.Join(filepath.Dir(root), "enabled")
+	link := func(skill string) string { return filepath.Join(enabledDir, "vam@owner@repo@"+skill) }
+	clickLabel(t, driver, "启用技能 owner/repo/tdd")
+	if _, err := os.Stat(filepath.Join(link("tdd"), "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+	if !drawn(t, driver, "部分") {
+		t.Fatal("source does not show partial state")
+	}
+	if window.page().(interface{ Title() string }).Title() != title {
+		t.Fatal("switch selected a different skill")
+	}
+	hitBounds(t, driver, "启用技能 owner/repo/alpha")
+	clickLabel(t, driver, "启用来源 owner/repo")
+	for _, skill := range []string{"alpha", "long", "tdd"} {
+		if _, err := os.Readlink(link(skill)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if drawn(t, driver, "部分") {
+		t.Fatal("fully enabled source still shows partial state")
+	}
+	hitBounds(t, driver, "启用技能 owner/repo/alpha")
+	clickLabel(t, driver, "启用来源 owner/repo")
+	for _, skill := range []string{"alpha", "long", "tdd"} {
+		if _, err := os.Lstat(link(skill)); !os.IsNotExist(err) {
+			t.Fatalf("link remains: %s, %v", skill, err)
+		}
+	}
+	if window.page().(interface{ Title() string }).Title() != title {
+		t.Fatal("source switch changed selection")
+	}
+}
+
+// BenchmarkSkillsPaint measures a complete steady-state frame with the tree's
+// switches and the selected document, without opening a native window.
+func BenchmarkSkillsPaint(b *testing.B) {
+	window := New(domain.NewMemory())
+	var canvas gfx.Canvas
+	driver, err := app.NewDriver(window.Config(), &canvas)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer driver.Close()
+	for i := 0; i < 5; i++ {
+		window.invalidator.Invalidate()
+		if err := driver.Pump(); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		window.invalidator.Invalidate()
+		if err := driver.Pump(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// overflowingSkills keeps the fixture independent of network and user files.
+type overflowingSkills struct{ *domain.Memory }
+
+func (overflowingSkills) Sources() []domain.Source {
+	skills := make([]domain.Skill, 60)
+	for i := range skills {
+		skills[i].Name = fmt.Sprintf("skill-%02d", i)
+	}
+	return []domain.Source{{Name: "many", Skills: skills}}
+}
+
+func TestSkillsListScrollsWithoutMovingSearch(t *testing.T) {
+	window, driver := newWindowWith(t, overflowingSkills{domain.NewMemory()})
+	search := hitBounds(t, driver, "搜索 Skills")
+	first := hitBounds(t, driver, "skill-00")
+	x := window.split.Pos + kit.SplitterWidth + 50
+	if err := driver.Scroll(gfx.ScrollEvent{X: x, Y: first.Y + 10, DeltaY: 10000, Precise: true}); err != nil {
+		t.Fatal(err)
+	}
+	last := hitBounds(t, driver, "skill-59")
+	if last.Y+last.Height > driver.Frame().Height || last.Y < search.Y+search.Height {
+		t.Fatal("scrolling the skills list did not reveal its last skill")
+	}
+	if after := hitBounds(t, driver, "搜索 Skills"); after != search {
+		t.Fatal("list scrolling moved the search field")
+	}
+	if err := driver.Scroll(gfx.ScrollEvent{X: x, Y: first.Y + 10, DeltaY: -10000, Precise: true}); err != nil {
+		t.Fatal(err)
+	}
+	hitBounds(t, driver, "skill-00")
+}
+
+func TestSkillSwitchStaysRightAlignedWhenPaneWidens(t *testing.T) {
+	window, driver := newWindow(t)
+	before := hitBounds(t, driver, "启用技能 开发/tdd")
+	pane := window.page().Pane()
+	from := window.split.Pos + kit.SplitterWidth + pane.Split.Pos + 4
+	drag(t, driver, from, from+180)
+	after := hitBounds(t, driver, "启用技能 开发/tdd")
+	if after.X-before.X != 180 {
+		t.Fatalf("switch did not follow the pane right edge: %v to %v", before.X, after.X)
+	}
+}
+
+func TestDetailToolbarExpirationDisablesListSwitch(t *testing.T) {
+	_, driver, root := newLibraryWindow(t)
+	installStub(t, driver)
+	label := fmt.Sprintf("总字数 %d", domain.ParseDocument([]byte(stubDeclared()), "").CharacterCount)
+	if !drawn(t, driver, label) {
+		t.Fatal("missing full-file character count")
+	}
+	header := hitBounds(t, driver, "过期")
+	clickLabel(t, driver, "启用技能 owner/repo/alpha")
+	clickLabel(t, driver, "过期")
+	link := filepath.Join(filepath.Dir(root), "enabled", "vam@owner@repo@alpha")
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatal("expired skill remains linked")
+	}
+	// A disabled row switch is still announced and visible, but cannot enable it.
+	clickLabel(t, driver, "启用技能 owner/repo/alpha")
+	clickLabel(t, driver, "启用来源 owner/repo")
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatal("individual or source switch enabled expired skill")
+	}
+	if err := driver.Scroll(gfx.ScrollEvent{X: 800, Y: 400, DeltaY: 4000}); err != nil {
+		t.Fatal(err)
+	}
+	if after := hitBounds(t, driver, "过期"); after != header {
+		t.Fatal("toolbar scrolled with document")
+	}
+	if !drawn(t, driver, label) || !drawn(t, driver, "Test Skill") {
+		t.Fatal("toolbar lost name or count after scrolling")
+	}
+	clickLabel(t, driver, "过期")
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatal("un-expiring automatically enabled skill")
+	}
+	clickLabel(t, driver, "启用技能 owner/repo/alpha")
+	if _, err := os.Readlink(link); err != nil {
+		t.Fatal("switch did not become usable:", err)
+	}
+}
+
+func TestFolderButtonRevealsEnabledSkills(t *testing.T) {
+	_, driver, root := newLibraryWindow(t)
+	clickLabel(t, driver, "本地文件夹")
+	settle(t, driver, func() bool {
+		path, ok := driver.LastRevealedPath()
+		return ok && path == filepath.Join(filepath.Dir(root), "enabled")
+	})
+}
+
+func TestToolbarFoldsAndExpandsAllSources(t *testing.T) {
+	_, driver := newWindow(t)
+	hasHit := func(name string) bool {
+		for _, hit := range driver.Snapshot().Hits {
+			if hit.Label == name {
+				return true
+			}
+		}
+		return false
+	}
+	clickLabel(t, driver, "全部收起")
+	if hasHit("tdd") || hasHit("research") {
+		t.Fatal("collapse all left skills visible")
+	}
+	clickLabel(t, driver, "全部展开")
+	if !hasHit("tdd") || !hasHit("research") {
+		t.Fatal("expand all did not reveal skills")
+	}
+	clickLabel(t, driver, "搜索 Skills")
+	if err := driver.Type("tdd"); err != nil {
+		t.Fatal(err)
+	}
+	clickLabel(t, driver, "全部收起")
+	if hasHit("tdd") {
+		t.Fatal("collapse all did not work during search")
+	}
+	clickLabel(t, driver, "全部展开")
+	if !hasHit("tdd") || hasHit("research") {
+		t.Fatal("expand all lost search filter")
+	}
+}
+
+func TestDetailFolderRevealsInstalledSkill(t *testing.T) {
+	_, driver, root := newLibraryWindow(t)
+	installStub(t, driver)
+	clickLabel(t, driver, "alpha")
+	want, err := filepath.EvalSymlinks(filepath.Join(root, "owner@repo", "alpha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clickLabel(t, driver, "技能文件夹")
+	settle(t, driver, func() bool {
+		path, ok := driver.LastRevealedPath()
+		return ok && path == want
+	})
 }

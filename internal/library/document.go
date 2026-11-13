@@ -20,7 +20,7 @@ const maxDocumentSize = 4 << 20
 // again here: a document is the one place a path is built from names the
 // application did not choose.
 func (l *Library) Document(source, skill, file string) (domain.Document, error) {
-	if !domain.ValidSkillName(source) || !domain.ValidSkillName(skill) {
+	if !domain.ValidSourceName(source) || !domain.ValidSkillName(skill) {
 		return domain.Document{}, domain.ErrNoDocument
 	}
 	dir := filepath.Join(l.config.Root, source, skill)

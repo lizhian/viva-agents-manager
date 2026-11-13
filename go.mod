@@ -3,7 +3,7 @@ module github.com/lizhian/viva-agents-manager
 go 1.27.3
 
 require (
-	github.com/vivaui/viva v0.2.2
+	github.com/vivaui/viva v0.6.1
 	modernc.org/sqlite v1.61.1
 )
 

@@ -3,7 +3,7 @@
 package agentsmd
 
 import (
-	"github.com/vivaui/viva/flex"
+	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/ui"
 
 	"github.com/lizhian/viva-agents-manager/internal/pages"
@@ -19,6 +19,6 @@ func New() *Page { return &Page{} }
 func (p *Page) Name() string { return "AGENTS.md" }
 
 // Content paints the placeholder body.
-func (p *Page) Content(f *flex.Frame, theme ui.Theme) {
+func (p *Page) Content(f ui.C, theme gfx.Theme) {
 	pages.Placeholder(f, theme, p.Name(), "这一页还没有内容。")
 }

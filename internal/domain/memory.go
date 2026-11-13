@@ -104,3 +104,52 @@ func (m *Memory) Document(source, skill, file string) (Document, error) {
 
 // OpenFolder reports that this store has no folder to show.
 func (m *Memory) OpenFolder() error { return ErrUnsupported }
+
+// SetEnabled changes the fake's skills without touching disk.
+func (m *Memory) SetEnabled(source, skill string, enabled bool) error {
+	for i := range m.sources {
+		if m.sources[i].Name != source {
+			continue
+		}
+		found := false
+		for j := range m.sources[i].Skills {
+			if skill == "" || m.sources[i].Skills[j].Name == skill {
+				if enabled && m.sources[i].Skills[j].Expired {
+					if skill != "" {
+						return ErrExpired
+					}
+					continue
+				}
+				m.sources[i].Skills[j].Enabled = enabled
+				found = true
+			}
+		}
+		if found {
+			return nil
+		}
+	}
+	return ErrNoSkills
+}
+
+// SetExpired updates the fake without changing an installed document.
+func (m *Memory) SetExpired(source, skill string, expired bool) error {
+	for i := range m.sources {
+		if m.sources[i].Name != source {
+			continue
+		}
+		for j := range m.sources[i].Skills {
+			item := &m.sources[i].Skills[j]
+			if item.Name != skill {
+				continue
+			}
+			item.Expired = expired
+			if expired {
+				item.Enabled = false
+			}
+			return nil
+		}
+	}
+	return ErrNoSkills
+}
+
+func (m *Memory) OpenSkillFolder(source, skill string) error { return ErrUnsupported }

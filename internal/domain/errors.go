@@ -6,10 +6,11 @@ import "errors"
 // the desktop cannot do. The interface turns these into sentences; the raw
 // messages are for logs and tests.
 var (
+	ErrExpired = errors.New("技能已过期，请先取消过期标记")
 	// ErrEmptyRepo is what Install returns when it is given nothing to install.
 	ErrEmptyRepo = errors.New("domain: empty repository")
 	// ErrBadRepo is what Install returns for something that is not "owner/repo".
-	ErrBadRepo = errors.New("domain: repository is not owner/repo")
+	ErrBadRepo = errors.New("仓库须为 owner/repo，@ 为保留分隔符")
 	// ErrAlreadyInstalled is what Install returns when the library already holds
 	// that repository.
 	ErrAlreadyInstalled = errors.New("domain: repository already installed")

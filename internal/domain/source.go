@@ -11,7 +11,11 @@ import (
 )
 
 // Skill is one skill a source provides, named as its directory is.
-type Skill struct{ Name string }
+type Skill struct {
+	Name    string
+	Enabled bool
+	Expired bool
+}
 
 // Source is where skills come from. Name is its directory in the library; Repo
 // is the repository it was installed from, empty for a source that is only a
@@ -53,7 +57,7 @@ var repoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 
 // ValidRepo reports whether repo names a repository as "owner/repo".
 func ValidRepo(repo string) bool {
-	if !repoPattern.MatchString(repo) {
+	if !repoPattern.MatchString(repo) || strings.Contains(repo, separator) {
 		return false
 	}
 	owner, name, _ := strings.Cut(repo, "/")
@@ -63,7 +67,7 @@ func ValidRepo(repo string) bool {
 // separator joins the two halves of a repository in a directory name. It is
 // reversible, unlike a bare underscore: "mattpocock_skills" could be either
 // "mattpocock/skills" or a folder someone named that.
-const separator = "_@_"
+const separator = "@"
 
 // SafeName is the directory a repository's skills are installed in.
 func SafeName(repo string) string { return strings.ReplaceAll(repo, "/", separator) }
@@ -81,8 +85,17 @@ func RepoOf(name string) string {
 	return repo
 }
 
-// ValidSkillName reports whether name can be a skill's directory: one path
-// element, and neither the current nor the parent directory.
+// ValidSkillName accepts a path element that cannot overlap the reserved
+// separator in an enabled link.
 func ValidSkillName(name string) bool {
+	return validPathName(name) && !strings.Contains(name, separator)
+}
+
+// ValidSourceName accepts a repository's safe name or an unambiguous local name.
+func ValidSourceName(name string) bool {
+	return RepoOf(name) != "" || ValidSkillName(name)
+}
+
+func validPathName(name string) bool {
 	return name != "" && name != "." && name != ".." && filepath.Base(name) == name
 }

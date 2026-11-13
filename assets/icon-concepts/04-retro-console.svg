@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 512 512" role="img" aria-label="04-retro-console">
+<rect width="512" height="512" rx="114" fill="#542D3D"/>
+<rect x="94" y="120" width="344" height="310" rx="39" fill="#2E1724" opacity=".5"/>
+<rect x="74" y="90" width="344" height="310" rx="39" fill="#E8C89B"/>
+<rect x="74" y="90" width="344" height="58" rx="39" fill="#FFF0D4"/>
+<path d="M74 126H418V150H74Z" fill="#FFF0D4"/>
+<circle cx="107" cy="120" r="8" fill="#CC6B4C"/>
+<circle cx="134" cy="120" r="8" fill="#DAB166"/>
+<circle cx="161" cy="120" r="8" fill="#6A9B7B"/>
+<path d="M356 118H386" stroke="#A69072" stroke-width="6" stroke-linecap="round"/>
+<rect x="96" y="162" width="300" height="205" rx="16" fill="#243B36"/>
+<rect x="104" y="170" width="284" height="189" rx="11" fill="none" stroke="#142F29" stroke-width="5"/>
+<path d="M145 211L188 247L145 283" fill="none" stroke="#C1E794" stroke-width="19" stroke-linecap="square" stroke-linejoin="miter"/>
+<path d="M217 283H266" stroke="#C1E794" stroke-width="17"/>
+<rect x="311" y="217" width="30" height="56" fill="#EDA66C"/>
+<path d="M140 323H205M220 323H264" stroke="#618777" stroke-width="7" stroke-linecap="square"/>
+<path d="M225 383H269" stroke="#A67D56" stroke-width="5" stroke-linecap="round"/>
+</svg>

@@ -52,8 +52,16 @@ type Store interface {
 	// Document reads one file of a skill's directory: what it declares about
 	// itself, and its body. The skill's own document is "SKILL.md".
 	Document(source, skill, file string) (Document, error)
+	// SetEnabled enables one skill, or all skills of a source when skill is empty.
+	// Sources reports the actual state after partial failures.
+	SetEnabled(source, skill string, enabled bool) error
+	// SetExpired marks a skill as expired and disables it; clearing the mark
+	// does not enable it. Marks survive source updates.
+	SetExpired(source, skill string, expired bool) error
 	// OpenFolder asks the desktop to show where skills live.
 	OpenFolder() error
+	// OpenSkillFolder shows the actual directory of one installed skill.
+	OpenSkillFolder(source, skill string) error
 }
 
 // PreparedSkill is one skill an installer left in the folder it was given.

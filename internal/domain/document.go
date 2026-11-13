@@ -2,12 +2,15 @@ package domain
 
 import (
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Document is one skill's SKILL.md: what it declares about itself, and its body.
 type Document struct {
+	// CharacterCount counts non-whitespace Unicode characters in the full file.
+	CharacterCount int
 	// Name is what the declaration block calls the skill, or its directory name
 	// when it declares none.
 	Name string
@@ -32,6 +35,11 @@ type declaration struct {
 func ParseDocument(data []byte, fallbackName string) Document {
 	text := strings.ReplaceAll(strings.TrimPrefix(string(data), "\ufeff"), "\r\n", "\n")
 	document := Document{Name: fallbackName, Body: text}
+	for _, character := range text {
+		if !unicode.IsSpace(character) {
+			document.CharacterCount++
+		}
+	}
 	block, body, ok := splitDeclaration(text)
 	if !ok {
 		return document

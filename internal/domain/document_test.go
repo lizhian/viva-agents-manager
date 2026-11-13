@@ -79,7 +79,9 @@ func TestParseDocument(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := ParseDocument([]byte(test.source), test.fallback); got != test.want {
+			got := ParseDocument([]byte(test.source), test.fallback)
+			got.CharacterCount = 0 // Character counting has its own mixed-language cases.
+			if got != test.want {
 				t.Fatalf("ParseDocument = %+v, want %+v", got, test.want)
 			}
 		})
@@ -93,5 +95,20 @@ func TestParseDocumentTrimsTheGapAfterTheBlock(t *testing.T) {
 	document := ParseDocument([]byte("---\nname: Example\n---\n\n\n# Body\n"), "alpha")
 	if document.Body != "# Body\n" {
 		t.Fatalf("body = %q, want the gap gone", document.Body)
+	}
+}
+
+func TestCharacterCountIncludesFullFileAndSkipsWhitespace(t *testing.T) {
+	for _, test := range []struct {
+		text string
+		want int
+	}{
+		{"中文 Ab1!\n\t　😀", 7},
+		{"---\nname: 中A\n---\n# 文 B!\n", 17},
+		{"", 0},
+	} {
+		if got := ParseDocument([]byte(test.text), "fallback").CharacterCount; got != test.want {
+			t.Fatalf("count(%q) = %d, want %d", test.text, got, test.want)
+		}
 	}
 }

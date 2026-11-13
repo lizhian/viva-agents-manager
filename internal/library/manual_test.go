@@ -45,7 +45,7 @@ func TestInstallFromARealRepository(t *testing.T) {
 		t.Fatal("the install reported no skills")
 	}
 	for _, skill := range sources[0].Skills {
-		path := filepath.Join(dir, "skills", "mattpocock_@_skills", skill.Name, "SKILL.md")
+		path := filepath.Join(dir, "skills", "mattpocock@skills", skill.Name, "SKILL.md")
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("%s was not migrated: %v", skill.Name, err)
 		}

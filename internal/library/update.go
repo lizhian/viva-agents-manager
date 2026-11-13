@@ -102,5 +102,8 @@ func (l *Library) replace(ctx context.Context, source domain.Source, progress fu
 	if progress != nil {
 		progress(domain.ProgressDone)
 	}
+	if err := l.pruneEnabled(source); err != nil {
+		return fmt.Errorf("技能已更新，清理已移除技能的软链失败: %w", err)
+	}
 	return nil
 }

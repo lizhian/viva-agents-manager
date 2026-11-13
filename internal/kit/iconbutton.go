@@ -1,7 +1,7 @@
 package kit
 
 import (
-	"github.com/vivaui/viva/flex"
+	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/ui"
 )
 
@@ -19,9 +19,9 @@ type IconButtonSpec struct {
 	// ID names the button in the identity tree, and Label is what a screen
 	// reader announces: a glyph says nothing on its own, and these buttons carry
 	// no text.
-	ID    ui.ID
+	ID    gfx.ID
 	Label string
-	Icon  ui.Icon
+	Icon  gfx.Icon
 	// Disabled draws the glyph at half strength and takes away both the hover
 	// and the press, keeping the label: a control that cannot be used yet is
 	// still announced.
@@ -30,21 +30,21 @@ type IconButtonSpec struct {
 
 // IconButton draws one and reports a click on it. Viva's buttons carry text and
 // no icon, so an icon button is a row that is its own hit target.
-func IconButton(f *flex.Frame, theme ui.Theme, spec IconButtonSpec) bool {
-	row := f.Row().Size(iconButtonSide, iconButtonSide).Radius(iconButtonRadius).Center().
-		HitWith(spec.ID, spec.Label, ui.HitOptions{Cursor: ui.PointerCursorHand, Disabled: spec.Disabled})
+func IconButton(f ui.C, theme gfx.Theme, spec IconButtonSpec) bool {
+	row := ui.Row(f).Size(iconButtonSide, iconButtonSide).Radius(iconButtonRadius).Center().
+		HitWith(spec.ID, spec.Label, gfx.HitOptions{Cursor: gfx.PointerCursorHand, Disabled: spec.Disabled})
 	if !spec.Disabled {
-		row = row.HoverBackground(theme.Hover)
+		row = row.Hover(ui.Look{}.Background(theme.Hover))
 	}
 	pressed := row.Children(func() {
-		f.Icon(spec.Icon).Size(iconGlyphSide, iconGlyphSide).Color(spec.tint(theme))
+		ui.Icon(f, spec.Icon).Size(iconGlyphSide, iconGlyphSide).Color(spec.tint(theme))
 	}).Clicked()
 	return pressed && !spec.Disabled
 }
 
 // tint is the glyph's colour: the muted foreground, at half strength when the
 // button cannot be used, which is how Viva dims a disabled control.
-func (spec IconButtonSpec) tint(theme ui.Theme) ui.Color {
+func (spec IconButtonSpec) tint(theme gfx.Theme) gfx.Color {
 	color := theme.MutedForeground
 	if spec.Disabled {
 		color.Alpha *= 0.5

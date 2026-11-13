@@ -6,6 +6,7 @@ package library
 import (
 	"database/sql"
 	"fmt"
+	"github.com/vivaui/viva/app"
 	"log"
 	"os"
 	"path/filepath"
@@ -21,6 +22,8 @@ import (
 type Config struct {
 	// Root is the folder installed skills live in.
 	Root string
+	// EnabledDir holds links exposed to agents; empty disables this capability.
+	EnabledDir string
 	// Tmp is where a repository is fetched before it is migrated into Root.
 	Tmp string
 	// DBPath is the SQLite file holding the index.
@@ -35,7 +38,7 @@ type Library struct {
 	// db is the index, nil when it could not be opened. The library lists and
 	// installs without it; only the read path gets slower.
 	db *sql.DB
-	// mu serializes installs, so two of them cannot stage into the same library.
+	// mu serializes installs, updates and link changes.
 	mu sync.Mutex
 }
 
@@ -54,11 +57,16 @@ func Open(installer domain.Installer) (*Library, error) {
 	if err != nil {
 		return nil, err
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
 	return New(Config{
-		Root:      filepath.Join(dir, "skills"),
-		Tmp:       filepath.Join(dir, ".tmp"),
-		DBPath:    filepath.Join(dir, "sqlite.db"),
-		Installer: installer,
+		Root:       filepath.Join(dir, "skills"),
+		EnabledDir: filepath.Join(home, ".agents", "skills"),
+		Tmp:        filepath.Join(dir, ".tmp"),
+		DBPath:     filepath.Join(dir, "sqlite.db"),
+		Installer:  installer,
 	})
 }
 
@@ -69,6 +77,17 @@ func New(config Config) (*Library, error) {
 	if config.Installer == nil {
 		return nil, fmt.Errorf("library: no installer")
 	}
+	var err error
+	config.Root, err = filepath.Abs(config.Root)
+	if err != nil {
+		return nil, err
+	}
+	if config.EnabledDir != "" {
+		config.EnabledDir, err = filepath.Abs(config.EnabledDir)
+		if err != nil {
+			return nil, err
+		}
+	}
 	for _, dir := range []string{config.Root, config.Tmp} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("library: %w", err)
@@ -77,6 +96,9 @@ func New(config Config) (*Library, error) {
 	library := &Library{config: config}
 	library.clearTmp()
 	library.clearLeftovers()
+	if err := library.migrateNames(); err != nil {
+		return nil, err
+	}
 	db, err := openIndex(config.DBPath)
 	if err != nil {
 		// The index is derived, so losing it costs a slower listing, not data.
@@ -102,20 +124,23 @@ func (l *Library) Sources() []domain.Source {
 	if l.db != nil {
 		sources, err := l.indexed()
 		if err == nil {
-			return sources
+			return l.withEnabled(sources)
 		}
 		log.Printf("library: 读取索引失败，改用磁盘扫描: %v", err)
 	}
-	return l.scan()
+	return l.withEnabled(l.scan())
 }
 
-// OpenFolder reports that the desktop cannot show the folder. Viva offers no way
-// to open or reveal a directory: app.OpenPath refuses anything that is not a
-// regular file, and app.OpenURL and app.OpenSchemeURL both refuse the file
-// scheme. Working around that with the platform's own opener would be the
-// application reimplementing a desktop capability, which belongs in the
-// framework instead.
-func (l *Library) OpenFolder() error { return domain.ErrUnsupported }
+// OpenFolder locates the enabled skills directory in the system file manager.
+func (l *Library) OpenFolder() error {
+	if l.config.EnabledDir == "" {
+		return domain.ErrUnsupported
+	}
+	if err := os.MkdirAll(l.config.EnabledDir, 0o755); err != nil {
+		return err
+	}
+	return app.RevealPath(l.config.EnabledDir)
+}
 
 // clearTmp removes what a previous run left behind: a repository that was half
 // fetched when the application quit has no use now.
@@ -150,4 +175,23 @@ func (l *Library) clearLeftovers() {
 			log.Printf("library: 清理 %s 失败: %v", name, err)
 		}
 	}
+}
+
+// OpenSkillFolder locates the installed directory, independent of enabled links.
+func (l *Library) OpenSkillFolder(source, skill string) error {
+	if !domain.ValidSourceName(source) || !domain.ValidSkillName(skill) {
+		return domain.ErrNoDocument
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Join(l.config.Root, source, skill))
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("技能路径不是目录: %s", dir)
+	}
+	return app.RevealPath(dir)
 }

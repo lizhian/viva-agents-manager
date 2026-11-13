@@ -7,12 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/components"
-	"github.com/vivaui/viva/flex"
+	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/markdown"
 	"github.com/vivaui/viva/ui"
 
@@ -91,24 +92,36 @@ type pending struct {
 type Page struct {
 	pages.Base
 
-	tree        *ui.Tree
-	scope       ui.Scope
+	tree        *gfx.Tree
+	scope       gfx.Scope
 	store       domain.Store
 	invalidator *app.Invalidator
-	split       flex.SplitterState
+	split       ui.SplitterState
 	pane        pages.Pane
 	ids         ids
 	modal       *kit.Modal
 	treeView    kit.Tree
 
-	sources   []domain.Source
-	branches  []kit.Branch
-	spec      kit.TreeSpec
-	search    flex.Field
-	repo      flex.Field
-	query     string
-	collapsed map[int]bool
-	chosen    choice
+	sources            []domain.Source
+	branches           []kit.Branch
+	spec               kit.TreeSpec
+	search             ui.Field
+	repo               ui.Field
+	query              string
+	collapsed          map[int]bool
+	foldOverride       bool
+	openingFolder      bool
+	folderDone         bool  // guarded by mu
+	folderErr          error // guarded by mu
+	sourceSwitchValues []bool
+	branchSwitchLabels []string
+	leafSwitchLabels   [][]string
+	branchSwitches     gfx.Scope
+	leafSwitches       []gfx.Scope
+	chosen             choice
+	characterLabel     string
+	expirySlot         ui.Box
+	expiryVisible      bool
 
 	// installing is true from the press that starts an install until its result
 	// has been applied; cancel stops the one in flight.
@@ -124,7 +137,7 @@ type Page struct {
 	// previewFile is what the preview shows, relative to the skill's directory,
 	// and empty when the preview is closed.
 	previewFile  string
-	previewSplit flex.SplitterState
+	previewSplit ui.SplitterState
 	// bodyHeight is how tall the skill's own body was the last time it was
 	// painted with no preview under it, so the preview opens at a fair height.
 	bodyHeight float32
@@ -132,6 +145,7 @@ type Page struct {
 	// updating is true from the press that starts an update until its results
 	// have been applied; updateCancel stops the one in flight.
 	updating        bool
+	enabledSummary  string
 	updateStatus    string
 	updateFailed    bool
 	updateCancelled bool
@@ -144,26 +158,32 @@ type Page struct {
 }
 
 type ids struct {
-	search       ui.ID
-	repo         ui.ID
-	install      ui.ID
-	update       ui.ID
-	folder       ui.ID
-	previewSplit ui.ID
-	previewClose ui.ID
+	search       gfx.ID
+	repo         gfx.ID
+	install      gfx.ID
+	update       gfx.ID
+	folder       gfx.ID
+	skillFolder  gfx.ID
+	fold         gfx.ID
+	previewSplit gfx.ID
+	previewClose gfx.ID
+	expired      gfx.ID
 }
 
 // New builds the page in its own identity scope, reading the store once. The
 // invalidator is how the install goroutine asks the window to repaint.
-func New(tree *ui.Tree, scope ui.Scope, store domain.Store, invalidator *app.Invalidator) *Page {
+func New(tree *gfx.Tree, scope gfx.Scope, store domain.Store, invalidator *app.Invalidator) *Page {
 	p := &Page{tree: tree, scope: scope, store: store, invalidator: invalidator}
 	p.split.Pos = paneWidth
 	p.ids = ids{
 		search:       tree.ID(scope, "search"),
+		expired:      tree.ID(scope, "expired"),
 		repo:         tree.ID(scope, "repo"),
 		install:      tree.ID(scope, "install"),
 		update:       tree.ID(scope, "update"),
 		folder:       tree.ID(scope, "folder"),
+		skillFolder:  tree.ID(scope, "skill-folder"),
+		fold:         tree.ID(scope, "fold"),
 		previewSplit: tree.ID(scope, "preview-split"),
 		previewClose: tree.ID(scope, "preview-close"),
 	}
@@ -174,9 +194,12 @@ func New(tree *ui.Tree, scope ui.Scope, store domain.Store, invalidator *app.Inv
 	// The callbacks are made once: they read the page, so they follow a reload
 	// without being rebuilt.
 	p.spec = kit.TreeSpec{
-		Visible:  func(branch, leaf int) bool { return p.match(branch, leaf) },
-		Open:     p.branchOpen,
-		OnToggle: p.toggleBranch,
+		Visible:      func(branch, leaf int) bool { return p.match(branch, leaf) },
+		Open:         p.branchOpen,
+		OnToggle:     p.toggleBranch,
+		BranchAction: p.drawSourceSwitch,
+		LeafAction:   p.drawSkillSwitch,
+		Expired:      func(branch, leaf int) bool { return p.sources[branch].Skills[leaf].Expired },
 		Chosen: func(branch, leaf int) bool {
 			skill := p.sources[branch].Skills[leaf]
 			return skill.Name == p.chosen.skill && p.sources[branch].Name == p.chosen.source
@@ -192,21 +215,49 @@ func New(tree *ui.Tree, scope ui.Scope, store domain.Store, invalidator *app.Inv
 
 // reload reads the store again and rebuilds the names the tree draws.
 func (p *Page) reload() {
-	p.sources = p.store.Sources()
+	p.reloadSources()
+	p.load()
+}
+
+func (p *Page) reloadSources() {
+	p.sources = slices.Clone(p.store.Sources())
+	enabled := 0
+	for _, source := range p.sources {
+		for _, skill := range source.Skills {
+			if skill.Enabled && !skill.Expired {
+				enabled++
+			}
+		}
+	}
+	p.enabledSummary = fmt.Sprintf("已启用 %d 个技能", enabled)
+	for i := range p.sources {
+		p.sources[i].Skills = slices.Clone(p.sources[i].Skills)
+		slices.SortFunc(p.sources[i].Skills, compareSkills)
+	}
 	branches := p.tree.Sub(p.scope, p.tree.Name("branches"))
-	leaves := make([]ui.Scope, len(p.sources))
+	leaves := make([]gfx.Scope, len(p.sources))
+	p.branchSwitches = p.tree.Sub(p.scope, p.tree.Name("source-switches"))
+	p.leafSwitches = make([]gfx.Scope, len(p.sources))
+	p.branchSwitchLabels = make([]string, len(p.sources))
+	p.sourceSwitchValues = make([]bool, len(p.sources))
+	p.leafSwitchLabels = make([][]string, len(p.sources))
 	p.branches = make([]kit.Branch, len(p.sources))
 	for i, source := range p.sources {
 		leaves[i] = p.tree.Sub(p.scope, p.tree.Name(source.Name))
+		p.leafSwitches[i] = p.tree.Sub(p.branchSwitches, p.tree.Name(source.Name))
+		p.branchSwitchLabels[i] = "启用来源 " + source.Label()
+		p.leafSwitchLabels[i] = make([]string, len(source.Skills))
 		names := make([]string, len(source.Skills))
 		for j, skill := range source.Skills {
 			names[j] = skill.Name
+			p.leafSwitchLabels[i][j] = "启用技能 " + source.Label() + "/" + skill.Name
 		}
 		p.branches[i] = kit.Branch{Name: source.Label(), Leaves: names}
 	}
 	p.treeView = kit.Tree{
+		ScrollID: p.tree.ID(p.scope, "list-scroll"),
 		BranchID: branches.At,
-		LeafID:   func(branch, leaf int) ui.ID { return leaves[branch].At(leaf) },
+		LeafID:   func(branch, leaf int) gfx.ID { return leaves[branch].At(leaf) },
 	}
 	p.spec.Branches = p.branches
 	// An empty library and a search that matched nothing are different states,
@@ -218,7 +269,6 @@ func (p *Page) reload() {
 	if !p.chosen.exists(p.sources) {
 		p.chosen = firstChoice(p.sources)
 	}
-	p.load()
 }
 
 // Name is the navigation label.
@@ -236,22 +286,22 @@ func (p *Page) Title() string {
 func (p *Page) Pane() *pages.Pane { return &p.pane }
 
 // Fields are the page's text fields: the search box, and the dialog's source.
-func (p *Page) Fields() []*flex.Field { return []*flex.Field{&p.search, &p.repo} }
+func (p *Page) Fields() []*ui.Field { return []*ui.Field{&p.search, &p.repo} }
 
 // Content paints what the chosen skill says about itself and reserves the room
 // the bodies take. The bodies are painted in Overlay: the markdown view draws to
 // the canvas, and its rectangle is only known once the page is laid out.
-func (p *Page) Content(f *flex.Frame, theme ui.Theme) {
+func (p *Page) Content(f ui.C, theme gfx.Theme) {
 	p.main.slotted = false
 	p.preview.slotted = false
-	f.Column().FillWidth().Grow(1).Pad(28).Gap(14).Children(func() {
+	ui.Column(f).FillWidth().Grow(1).PadSides(8, 28, 28, 28).Gap(14).Children(func() {
 		switch {
 		case p.main.err != nil:
-			f.Text("读取技能文档失败").FontSize(22).Bold()
-			f.Paragraph(p.main.err.Error(), 3).FontSize(13).Color(theme.Danger)
+			ui.Text(f, "读取技能文档失败").FontSize(22).Bold()
+			ui.Paragraph(f, p.main.err.Error(), 3).FontSize(13).Color(theme.Danger)
 		case p.chosen.skill == "":
-			f.Text(p.Title()).FontSize(22).Bold()
-			f.Paragraph("从左边选一个技能。", 2).FontSize(13).Muted()
+			ui.Text(f, p.Title()).FontSize(22).Bold()
+			ui.Paragraph(f, "从左边选一个技能。", 2).FontSize(13).Muted()
 		default:
 			p.drawDocuments(f, theme)
 		}
@@ -260,34 +310,34 @@ func (p *Page) Content(f *flex.Frame, theme ui.Theme) {
 
 // drawDocuments paints the skill's own document and, when it is open, the
 // preview under it.
-func (p *Page) drawDocuments(f *flex.Frame, theme ui.Theme) {
+func (p *Page) drawDocuments(f ui.C, theme gfx.Theme) {
 	if p.previewFile == "" {
-		p.main.slot = f.Slot().Grow(1).FillWidth()
+		p.main.slot = ui.Slot(f).Grow(1).FillWidth()
 		p.main.slotted = true
 		return
 	}
-	p.main.slot = f.Slot().Height(p.previewSplit.Pos).FillWidth()
+	p.main.slot = ui.Slot(f).Height(p.previewSplit.Pos).FillWidth()
 	p.main.slotted = true
-	f.Splitter(p.ids.previewSplit, &p.previewSplit).Mins(previewMin, previewMin)
-	f.Column().Grow(1).FillWidth().Gap(8).Children(func() {
-		f.Row().FillWidth().Items(flex.Center).Gap(8).Children(func() {
-			f.Text(p.preview.document.Name).FontSize(13).Bold().Ellipsis()
-			f.Spacer()
-			if f.Button(p.ids.previewClose, "关闭").Outline().XSmall().Clicked() {
+	ui.Splitter(f, &p.previewSplit).Mins(previewMin, previewMin)
+	ui.Column(f).Grow(1).FillWidth().Gap(8).Children(func() {
+		ui.Row(f).FillWidth().Items(ui.Center).Gap(8).Children(func() {
+			ui.Text(f, p.preview.document.Name).FontSize(13).Bold().Ellipsis()
+			ui.Spacer(f)
+			if ui.Button(f, "关闭").Outline().XSmall().Clicked() {
 				p.closePreview()
 			}
 		})
 		if p.preview.err != nil {
-			f.Paragraph(p.preview.err.Error(), 3).FontSize(13).Color(theme.Danger)
+			ui.Paragraph(f, p.preview.err.Error(), 3).FontSize(13).Color(theme.Danger)
 			return
 		}
-		p.preview.slot = f.Slot().Grow(1).FillWidth()
+		p.preview.slot = ui.Slot(f).Grow(1).FillWidth()
 		p.preview.slotted = true
 	})
 }
 
 // Overlay paints the documents into the room Content reserved for them.
-func (p *Page) Overlay(canvas *ui.Canvas, theme ui.Theme) {
+func (p *Page) Overlay(canvas *gfx.Canvas, theme gfx.Theme) {
 	if p.main.slotted {
 		p.main.paint(canvas, theme)
 		if p.previewFile == "" {
@@ -298,11 +348,12 @@ func (p *Page) Overlay(canvas *ui.Canvas, theme ui.Theme) {
 		p.preview.paint(canvas, theme)
 	}
 	p.followLinks(canvas)
+	p.paintExpiry(canvas, theme)
 }
 
 // followLinks opens what a reader's link points at: a file of the skill in the
 // preview, anything else in the browser.
-func (p *Page) followLinks(canvas *ui.Canvas) {
+func (p *Page) followLinks(canvas *gfx.Canvas) {
 	for _, r := range []*reader{&p.preview, &p.main} {
 		target, ok := r.clicked(canvas)
 		if !ok {
@@ -318,12 +369,12 @@ func (p *Page) followLinks(canvas *ui.Canvas) {
 }
 
 // Scroll moves the document the pointer is over.
-func (p *Page) Scroll(event ui.ScrollEvent) ui.EventResult {
+func (p *Page) Scroll(event gfx.ScrollEvent) gfx.EventResult {
 	if p.preview.slotted && covers(p.preview.area, event.X, event.Y) {
 		return p.preview.scroll.Wheel(event)
 	}
-	if !p.main.slotted {
-		return ui.EventResult{}
+	if !p.main.slotted || !covers(p.main.area, event.X, event.Y) {
+		return gfx.EventResult{}
 	}
 	return p.main.scroll.Wheel(event)
 }
@@ -331,52 +382,52 @@ func (p *Page) Scroll(event ui.ScrollEvent) ui.EventResult {
 // Pointer selects the text of a document: a press starts a selection, a drag
 // extends it, and a release that chose something swallows the click so a link
 // under the pointer does not open.
-func (p *Page) Pointer(event ui.PointerEvent) ui.EventResult {
-	point := ui.Point{X: event.X, Y: event.Y}
+func (p *Page) Pointer(event gfx.PointerEvent) gfx.EventResult {
+	point := gfx.Point{X: event.X, Y: event.Y}
 	switch event.Kind {
-	case ui.PointerDown:
+	case gfx.PointerDown:
 		r := p.readerAt(event.X, event.Y)
 		if r == nil {
-			return ui.EventResult{}
+			return gfx.EventResult{}
 		}
 		p.clearSelections(r)
 		if !r.selectAt(point) {
-			return ui.EventResult{}
+			return gfx.EventResult{}
 		}
-		return ui.EventResult{Repaint: true}
-	case ui.PointerMove:
+		return gfx.EventResult{Repaint: true}
+	case gfx.PointerMove:
 		r := p.selectingReader()
 		if r == nil {
-			return ui.EventResult{}
+			return gfx.EventResult{}
 		}
 		r.extendTo(point)
-		return ui.EventResult{Repaint: true}
-	case ui.PointerUp:
+		return gfx.EventResult{Repaint: true}
+	case gfx.PointerUp:
 		r := p.selectingReader()
 		if r == nil {
-			return ui.EventResult{}
+			return gfx.EventResult{}
 		}
 		r.extendTo(point)
 		if r.finish() {
 			// A drag is not a click: it must not open the link it ended on.
-			return ui.EventResult{Handled: true, Repaint: true}
+			return gfx.EventResult{Handled: true, Repaint: true}
 		}
-		return ui.EventResult{Repaint: true}
+		return gfx.EventResult{Repaint: true}
 	}
-	return ui.EventResult{}
+	return gfx.EventResult{}
 }
 
 // Shortcut copies the text the reader has chosen.
-func (p *Page) Shortcut(event ui.KeyEvent) ui.EventResult {
-	if event.Text != "c" || event.Modifiers&(ui.ModifierMeta|ui.ModifierControl) == 0 {
-		return ui.EventResult{}
+func (p *Page) Shortcut(event gfx.KeyEvent) gfx.EventResult {
+	if event.Text != "c" || event.Modifiers&(gfx.ModifierMeta|gfx.ModifierControl) == 0 {
+		return gfx.EventResult{}
 	}
 	for _, r := range []*reader{&p.main, &p.preview} {
 		if text := r.selected(); text != "" {
-			return ui.EventResult{Handled: true, ClipboardText: text}
+			return gfx.EventResult{Handled: true, ClipboardText: text}
 		}
 	}
-	return ui.EventResult{}
+	return gfx.EventResult{}
 }
 
 // readerAt is the document under a window point, or nil.
@@ -412,7 +463,7 @@ func (p *Page) clearSelections(keep *reader) {
 }
 
 // selectAt begins a selection at a window point.
-func (r *reader) selectAt(point ui.Point) bool {
+func (r *reader) selectAt(point gfx.Point) bool {
 	offset, ok := r.view.OffsetAt(point)
 	if !ok {
 		return false
@@ -423,7 +474,7 @@ func (r *reader) selectAt(point ui.Point) bool {
 }
 
 // extendTo moves the end of the selection to a window point.
-func (r *reader) extendTo(point ui.Point) {
+func (r *reader) extendTo(point gfx.Point) {
 	if !r.selecting {
 		return
 	}
@@ -457,6 +508,7 @@ func (p *Page) load() {
 	}
 	p.main.read(p.store, p.chosen.source, p.chosen.skill, "SKILL.md", p.chosen.skill)
 	p.main.render(true)
+	p.characterLabel = fmt.Sprintf("总字数 %d", p.main.document.CharacterCount)
 }
 
 // openPreview shows a file of the chosen skill under its own document.
@@ -492,17 +544,17 @@ type reader struct {
 	err      error
 	parsed   markdown.Document
 	view     components.MarkdownView
-	scroll   flex.ScrollState
-	links    ui.Scope
+	scroll   ui.ScrollState
+	links    gfx.Scope
 	// slot is where the body goes, and slotted says Content reserved it this
 	// frame: a Box from an older frame must never be read.
-	slot    flex.Box
+	slot    ui.Box
 	slotted bool
 	// width is the width the body was last laid out at, height the height it came
 	// out at, and area where it was painted.
 	width  float32
 	height float32
-	area   ui.Rect
+	area   gfx.Rect
 	// selection is the text the reader has chosen, and selecting says a drag is
 	// still choosing it.
 	selection components.MarkdownSelection
@@ -539,7 +591,7 @@ func (r *reader) render(heading bool) {
 }
 
 // paint draws the body into the room Content reserved for it.
-func (r *reader) paint(canvas *ui.Canvas, theme ui.Theme) {
+func (r *reader) paint(canvas *gfx.Canvas, theme gfx.Theme) {
 	area := r.slot.Rect()
 	if area.Width <= 0 || area.Height <= 0 {
 		return
@@ -563,7 +615,7 @@ func (r *reader) paint(canvas *ui.Canvas, theme ui.Theme) {
 }
 
 // clicked is the destination of the link this paint delivered a click on.
-func (r *reader) clicked(canvas *ui.Canvas) (string, bool) {
+func (r *reader) clicked(canvas *gfx.Canvas) (string, bool) {
 	index, ok := canvas.ClickedIn(r.links)
 	if !ok {
 		return "", false
@@ -573,7 +625,7 @@ func (r *reader) clicked(canvas *ui.Canvas) (string, bool) {
 }
 
 // covers reports whether the point is inside the rectangle.
-func covers(area ui.Rect, x, y float32) bool {
+func covers(area gfx.Rect, x, y float32) bool {
 	return x >= area.X && x < area.X+area.Width && y >= area.Y && y < area.Y+area.Height
 }
 
@@ -593,29 +645,29 @@ func markdownStyle() components.MarkdownStyle {
 // Dialog paints the install dialog while it is open. An install runs for as long
 // as the network takes, so the dialog stays open with the stage it has reached
 // and the reason it failed, rather than closing and leaving the page silent.
-func (p *Page) Dialog(f *flex.Frame, theme ui.Theme) {
+func (p *Page) Dialog(f ui.C, theme gfx.Theme) {
 	wasOpen := p.modal.Open
 	p.modal.Draw(f, kit.ModalSpec{Title: "安装 Skill 来源", Width: 480, Focus: p.ids.repo},
 		func() {
-			f.Column().FillWidth().Gap(8).Children(func() {
-				f.Field(&p.repo, p.ids.repo, "GitHub 仓库", "owner/repo").FillWidth()
+			ui.Column(f).FillWidth().Gap(8).Children(func() {
+				ui.TextFieldID(f, p.ids.repo, &p.repo, "GitHub 仓库", "owner/repo").FillWidth()
 				if p.installing {
-					f.Text(progressLabel(p.progress)).FontSize(13).Muted()
+					ui.Text(f, progressLabel(p.progress)).FontSize(13).Muted()
 				} else {
-					f.Paragraph("填写 GitHub 仓库，需要本机可运行 npx skills。", 1).
+					ui.Paragraph(f, "填写 owner/repo，需要本机可运行 npx skills。@ 为保留分隔符。", 3).
 						FontSize(13).Muted()
 				}
 				if p.installErr != "" {
-					f.Text(p.installErr).FontSize(13).Color(theme.Danger)
+					ui.Text(f, p.installErr).FontSize(13).Color(theme.Danger)
 				}
 			})
 		},
 		func() {
-			if f.Button(p.modal.Cancel, "取消").Outline().Clicked() {
+			if ui.Button(f, "取消").Outline().Clicked() {
 				p.dismiss()
 			}
 			repo := strings.TrimSpace(p.repo.Text())
-			if f.Button(p.modal.Primary, "开始安装").
+			if ui.Button(f, "开始安装").
 				Disabled(p.installing || !domain.ValidRepo(repo)).Clicked() {
 				p.startInstall(repo)
 			}
@@ -628,29 +680,30 @@ func (p *Page) Dialog(f *flex.Frame, theme ui.Theme) {
 }
 
 // drawPane paints the page's column at the width the splitter gives it.
-func (p *Page) drawPane(f *flex.Frame, theme ui.Theme, width float32) {
+func (p *Page) drawPane(f ui.C, theme gfx.Theme, width float32) {
 	p.filter()
-	f.Column().Width(width).Background(theme.Card).Children(func() {
+	ui.Column(f).Width(width).Background(theme.Card).Children(func() {
 		// The buttons sit in the strip the content toolbar occupies, so the two
 		// columns read as one band. The row is the window's drag region, and the
-		// buttons inside it keep their own presses. The strip before them stays
-		// the drag region, which is what pushes them to its right edge.
-		f.Row().Height(kit.Titlebar).PadSides(0, searchInset, 0, searchInset).
-			Items(flex.Center).Gap(6).MovesWindow().Children(func() {
-			f.Spacer()
+		// buttons inside it keep their own presses. Status shares the strip with
+		// them so updates never shift the search box or tree below it.
+		ui.Row(f).Height(kit.Titlebar).PadSides(0, searchInset, 0, searchInset).
+			Items(ui.Center).Gap(6).MovesWindow().Children(func() {
+			if p.updateStatus != "" {
+				color := theme.MutedForeground
+				if p.updateFailed {
+					color = theme.Danger
+				}
+				ui.Text(f, p.updateStatus).FontSize(11).Color(color).
+					Basis(0).Grow(1).Ellipsis()
+			} else {
+				ui.Text(f, p.enabledSummary).FontSize(11).Muted().
+					Basis(0).Grow(1).Ellipsis()
+			}
 			p.buttons(f, theme)
 		})
-		if p.updateStatus != "" {
-			color := theme.MutedForeground
-			if p.updateFailed {
-				color = theme.Danger
-			}
-			f.Column().PadSides(2, searchInset, 2, searchInset).Children(func() {
-				f.Paragraph(p.updateStatus, 2).FontSize(11).Color(color)
-			})
-		}
-		f.Column().PadSides(0, searchInset, searchInset, searchInset).Children(func() {
-			f.Field(&p.search, p.ids.search, "搜索 Skills", "搜索 skills…").FillWidth()
+		ui.Column(f).PadSides(0, searchInset, searchInset, searchInset).Children(func() {
+			ui.TextFieldID(f, p.ids.search, &p.search, "搜索 Skills", "搜索 skills…").FillWidth()
 		})
 		p.treeView.Draw(f, theme, p.spec)
 	})
@@ -658,7 +711,7 @@ func (p *Page) drawPane(f *flex.Frame, theme ui.Theme, width float32) {
 
 // buttons draws what can be done to the library as a whole. Each one is a glyph,
 // so its name is what a screen reader announces rather than anything on screen.
-func (p *Page) buttons(f *flex.Frame, theme ui.Theme) {
+func (p *Page) buttons(f ui.C, theme gfx.Theme) {
 	install := kit.IconButtonSpec{ID: p.ids.install, Label: "安装", Icon: icons.Plus, Disabled: p.updating}
 	if kit.IconButton(f, theme, install) {
 		p.openDialog()
@@ -676,10 +729,30 @@ func (p *Page) buttons(f *flex.Frame, theme ui.Theme) {
 			p.startUpdate()
 		}
 	}
-	// Viva cannot reveal a directory yet, so the button is drawn inert rather than
-	// pressed to no effect. See domain.ErrUnsupported.
-	folder := kit.IconButtonSpec{ID: p.ids.folder, Label: "本地文件夹", Icon: icons.FolderOpen, Disabled: true}
-	kit.IconButton(f, theme, folder)
+	folder := kit.IconButtonSpec{ID: p.ids.folder, Label: "本地文件夹", Icon: icons.FolderOpen, Disabled: p.openingFolder}
+	if kit.IconButton(f, theme, folder) {
+		p.openFolder(false)
+	}
+	fold := kit.IconButtonSpec{ID: p.ids.fold, Label: "全部展开", Icon: icons.ChevronsUpDown, Disabled: len(p.sources) == 0}
+	anyOpen := false
+	for i := range p.sources {
+		if p.branchOpen(i) {
+			anyOpen = true
+			break
+		}
+	}
+	if anyOpen {
+		fold.Label, fold.Icon = "全部收起", icons.ChevronsDownUp
+	}
+	if kit.IconButton(f, theme, fold) {
+		p.foldOverride = true
+		if p.collapsed == nil {
+			p.collapsed = make(map[int]bool)
+		}
+		for i := range p.sources {
+			p.collapsed[i] = anyOpen
+		}
+	}
 }
 
 // filter keeps the query in step with the search box. The text is read and
@@ -688,6 +761,7 @@ func (p *Page) filter() {
 	query := strings.ToLower(strings.TrimSpace(p.search.Text()))
 	if query != p.query {
 		p.query = query
+		p.foldOverride = false
 	}
 }
 
@@ -702,14 +776,19 @@ func (p *Page) match(branch, leaf int) bool {
 // branchOpen reports whether a branch's leaves are drawn: a search opens every
 // branch that still has a match.
 func (p *Page) branchOpen(branch int) bool {
-	return p.query != "" || !p.collapsed[branch]
+	return p.query != "" && !p.foldOverride || !p.collapsed[branch]
 }
 
 func (p *Page) toggleBranch(branch int) {
+	open := p.branchOpen(branch)
+	if p.query != "" && !p.foldOverride {
+		clear(p.collapsed)
+	}
+	p.foldOverride = true
 	if p.collapsed == nil {
 		p.collapsed = map[int]bool{}
 	}
-	p.collapsed[branch] = !p.collapsed[branch]
+	p.collapsed[branch] = open
 }
 
 // openDialog shows the dialog with a clean slate.
@@ -858,6 +937,7 @@ func updateResultLabel(results []domain.UpdateResult, cancelled bool) (string, b
 
 // Wake applies whatever the background work published.
 func (p *Page) Wake() {
+	p.wakeFolder()
 	p.wakeInstall()
 	p.wakeUpdate()
 }
@@ -909,7 +989,7 @@ func failureMessage(err error) string {
 	case errors.Is(err, domain.ErrEmptyRepo):
 		return "请填写仓库"
 	case errors.Is(err, domain.ErrBadRepo):
-		return "仓库格式应为 owner/repo"
+		return "仓库须为 owner/repo，@ 为保留分隔符"
 	case errors.Is(err, domain.ErrAlreadyInstalled):
 		return "这个仓库已经装过了"
 	case errors.Is(err, domain.ErrNoSkills):
@@ -919,4 +999,176 @@ func failureMessage(err error) string {
 	default:
 		return err.Error()
 	}
+}
+
+// drawSourceSwitch aggregates every skill, including ones hidden by search.
+func (p *Page) drawSourceSwitch(f ui.C, theme gfx.Theme, branch int) {
+	source := p.sources[branch]
+	enabled, available := 0, 0
+	for _, skill := range source.Skills {
+		if skill.Expired {
+			continue
+		}
+		available++
+		if skill.Enabled {
+			enabled++
+		}
+	}
+	all := available > 0 && enabled == available
+	if enabled > 0 && !all {
+		ui.Text(f, "部分").FontSize(10).Muted().Shrink(0)
+	}
+	p.sourceSwitchValues[branch] = all
+	if ui.Switch(f, &p.sourceSwitchValues[branch], "").Small().Shrink(0).
+		Label(p.branchSwitchLabels[branch]).Disabled(p.updating || p.installing || available == 0).Clicked() {
+		p.setEnabled(source.Name, "", p.sourceSwitchValues[branch])
+	}
+}
+
+func (p *Page) drawSkillSwitch(f ui.C, theme gfx.Theme, branch, leaf int) {
+	source := p.sources[branch]
+	skill := source.Skills[leaf]
+	if ui.Switch(f, &p.sources[branch].Skills[leaf].Enabled, "").Small().Shrink(0).
+		Label(p.leafSwitchLabels[branch][leaf]).Disabled(p.updating || p.installing || skill.Expired).Clicked() {
+		p.setEnabled(source.Name, skill.Name, p.sources[branch].Skills[leaf].Enabled)
+	}
+}
+
+func (p *Page) setEnabled(source, skill string, enabled bool) {
+	err := p.store.SetEnabled(source, skill, enabled)
+	p.updateFailed = err != nil
+	switch {
+	case err != nil:
+		p.updateStatus = "切换失败：" + err.Error()
+	case enabled:
+		p.updateStatus = "已启用"
+	default:
+		p.updateStatus = "已关闭"
+	}
+	p.reloadSources()
+}
+
+// Header stays above the independent document and preview scroll areas.
+func (p *Page) Header(f ui.C, theme gfx.Theme) {
+	p.expiryVisible = false
+	ui.Column(f).Height(32).Shrink(0).FillWidth().Children(func() {
+		ui.Row(f).Basis(0).Grow(1).FillWidth().PadSides(0, 4, 0, 16).Gap(12).Items(ui.Center).MovesWindow().Children(func() {
+			name := p.main.document.Name
+			if name == "" {
+				name = p.Title()
+			}
+			ui.Text(f, name).FontSize(12).Bold().Basis(0).Grow(1).Ellipsis()
+			if p.chosen.skill == "" {
+				return
+			}
+			if kit.IconButton(f, theme, kit.IconButtonSpec{ID: p.ids.skillFolder, Label: "技能文件夹", Icon: icons.FolderOpen, Disabled: p.openingFolder}) {
+				p.openFolder(true)
+			}
+			if p.main.err == nil {
+				ui.Text(f, p.characterLabel).FontSize(11).Muted().Shrink(0)
+			}
+			// Keep the label with its control; the switch already reserves a generous hit area.
+			ui.Row(f).Shrink(0).Gap(0).Items(ui.Center).Children(func() {
+				ui.Text(f, "过期").FontSize(11).Muted().Shrink(0)
+				width, height := components.SwitchHitExtent(theme, true)
+				p.expirySlot = ui.Slot(f).Size(width, height).Shrink(0).MarginSides(0, 0, 0, -4)
+				p.expiryVisible = true
+			})
+		})
+		ui.Row(f).Height(1).Shrink(0).FillWidth().Background(theme.Border)
+	})
+}
+
+// paintExpiry uses Viva's switch with a local danger accent for this state only.
+func (p *Page) paintExpiry(canvas *gfx.Canvas, theme gfx.Theme) {
+	if !p.expiryVisible {
+		return
+	}
+	expired := false
+	for _, source := range p.sources {
+		if source.Name != p.chosen.source {
+			continue
+		}
+		for _, skill := range source.Skills {
+			if skill.Name == p.chosen.skill {
+				expired = skill.Expired
+			}
+		}
+	}
+	area := p.expirySlot.Rect()
+	width, height := components.SwitchExtent(theme, true)
+	bounds := gfx.Rect{X: area.X + (area.Width-width)/2, Y: area.Y + (area.Height-height)/2, Width: width, Height: height}
+	theme.Primary, theme.PrimaryForeground = theme.Danger, theme.DangerForeground
+	control := components.BeginSwitch(canvas, theme, p.ids.expired, bounds, expired).Small().Label("过期")
+	if p.updating || p.installing {
+		control = control.Disabled()
+	}
+	if !control.Paint().Clicked() || p.updating || p.installing {
+		return
+	}
+	err := p.store.SetExpired(p.chosen.source, p.chosen.skill, !expired)
+	p.updateFailed = err != nil
+	switch {
+	case err != nil:
+		p.updateStatus = "设置过期失败：" + err.Error()
+	case expired:
+		p.updateStatus = "已取消过期，技能保持关闭"
+	default:
+		p.updateStatus = "已标记过期并停用"
+	}
+	p.reloadSources()
+	if p.invalidator != nil {
+		p.invalidator.Invalidate()
+	}
+}
+
+// openFolder lets the file manager launch without blocking the window thread.
+func (p *Page) openFolder(skill bool) {
+	p.openingFolder = true
+	chosen := p.chosen
+	go func() {
+		var err error
+		if skill {
+			err = p.store.OpenSkillFolder(chosen.source, chosen.skill)
+		} else {
+			err = p.store.OpenFolder()
+		}
+		p.mu.Lock()
+		p.folderDone, p.folderErr = true, err
+		p.mu.Unlock()
+		if p.invalidator != nil {
+			p.invalidator.Invalidate()
+		}
+	}()
+}
+
+func (p *Page) wakeFolder() {
+	p.mu.Lock()
+	done, err := p.folderDone, p.folderErr
+	p.folderDone, p.folderErr = false, nil
+	p.mu.Unlock()
+	if !done {
+		return
+	}
+	p.openingFolder = false
+	if err != nil {
+		p.updateStatus, p.updateFailed = "打开目录失败："+err.Error(), true
+	}
+}
+
+// compareSkills keeps actionable skills first and expired skills last.
+func compareSkills(a, b domain.Skill) int {
+	rank := func(s domain.Skill) int {
+		if s.Expired {
+			return 2
+		}
+		if s.Enabled {
+			return 0
+		}
+		return 1
+	}
+	if delta := rank(a) - rank(b); delta != 0 {
+		return delta
+	}
+	return strings.Compare(a.Name, b.Name)
 }

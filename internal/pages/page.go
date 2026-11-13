@@ -3,7 +3,8 @@
 package pages
 
 import (
-	"github.com/vivaui/viva/flex"
+	"github.com/lizhian/viva-agents-manager/internal/kit"
+	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/ui"
 )
 
@@ -16,24 +17,25 @@ type Page interface {
 	Pane() *Pane
 	// Fields are the page's text fields, which the shell hands to the platform so
 	// typing reaches the focused one.
-	Fields() []*flex.Field
+	Fields() []*ui.Field
+	Header(f ui.C, theme gfx.Theme)
 	// Content paints the page body in the column the shell opened for it.
-	Content(f *flex.Frame, theme ui.Theme)
+	Content(f ui.C, theme gfx.Theme)
 	// Dialog paints the page's modal over the window, if it has one open.
-	Dialog(f *flex.Frame, theme ui.Theme)
+	Dialog(f ui.C, theme gfx.Theme)
 	// Overlay paints what the page draws itself, after the layout its Content
 	// declared. A component that draws straight to the canvas is not a flex node,
 	// so the rectangle Content reserved for it is only known once the page is laid
 	// out; the shell calls this then.
-	Overlay(canvas *ui.Canvas, theme ui.Theme)
+	Overlay(canvas *gfx.Canvas, theme gfx.Theme)
 	// Scroll gives the wheel to the page, so what it draws itself can move.
-	Scroll(event ui.ScrollEvent) ui.EventResult
+	Scroll(event gfx.ScrollEvent) gfx.EventResult
 	// Pointer gives a pointer event to the page, so what it draws itself can be
 	// selected.
-	Pointer(event ui.PointerEvent) ui.EventResult
+	Pointer(event gfx.PointerEvent) gfx.EventResult
 	// Shortcut gives a Control- or Meta-modified chord to the page, so what it
 	// draws itself can be copied.
-	Shortcut(event ui.KeyEvent) ui.EventResult
+	Shortcut(event gfx.KeyEvent) gfx.EventResult
 	// Wake runs on the window thread before a repaint that background work asked
 	// for, and is where a page moves what that work published into its own state.
 	Wake()
@@ -42,10 +44,10 @@ type Page interface {
 // Pane is a page's own column beside the content. The page owns the width, the
 // shell owns the splitter that changes it.
 type Pane struct {
-	Split *flex.SplitterState
+	Split *ui.SplitterState
 	// Min is the narrowest the column may get.
 	Min  float32
-	Draw func(f *flex.Frame, theme ui.Theme, width float32)
+	Draw func(f ui.C, theme gfx.Theme, width float32)
 }
 
 // Base answers for the parts a page does not have, so a page declares only what
@@ -56,32 +58,37 @@ type Base struct{}
 func (Base) Pane() *Pane { return nil }
 
 // Fields reports that the page has no text fields.
-func (Base) Fields() []*flex.Field { return nil }
+func (Base) Fields() []*ui.Field { return nil }
 
 // Dialog reports that the page has no modal.
-func (Base) Dialog(*flex.Frame, ui.Theme) {}
+func (Base) Dialog(ui.C, gfx.Theme) {}
 
 // Overlay reports that the page draws nothing itself.
-func (Base) Overlay(*ui.Canvas, ui.Theme) {}
+func (Base) Overlay(*gfx.Canvas, gfx.Theme) {}
 
 // Scroll reports that the page has nothing of its own to scroll.
-func (Base) Scroll(ui.ScrollEvent) ui.EventResult { return ui.EventResult{} }
+func (Base) Scroll(gfx.ScrollEvent) gfx.EventResult { return gfx.EventResult{} }
 
 // Pointer reports that the page draws nothing that can be selected.
-func (Base) Pointer(ui.PointerEvent) ui.EventResult { return ui.EventResult{} }
+func (Base) Pointer(gfx.PointerEvent) gfx.EventResult { return gfx.EventResult{} }
 
 // Shortcut reports that the page owns no chords.
-func (Base) Shortcut(ui.KeyEvent) ui.EventResult { return ui.EventResult{} }
+func (Base) Shortcut(gfx.KeyEvent) gfx.EventResult { return gfx.EventResult{} }
 
 // Wake reports that the page has no background work to apply.
 func (Base) Wake() {}
 
 // Placeholder is the body a page shows before it has anything to show: a title,
 // one line of explanation and an empty card where the content will go.
-func Placeholder(f *flex.Frame, theme ui.Theme, title, note string) {
-	f.Column().Grow(1).Pad(28).Gap(14).Children(func() {
-		f.Text(title).FontSize(22).Bold()
-		f.Paragraph(note, 2).FontSize(13).Muted()
-		f.Column().Grow(1).Radius(10).Background(theme.Card).Border(1, theme.Border)
+func Placeholder(f ui.C, theme gfx.Theme, title, note string) {
+	ui.Column(f).Grow(1).Pad(28).Gap(14).Children(func() {
+		ui.Text(f, title).FontSize(22).Bold()
+		ui.Paragraph(f, note, 2).FontSize(13).Muted()
+		ui.Column(f).Grow(1).Radius(10).Background(theme.Card).Border(1, theme.Border)
 	})
+}
+
+// Header leaves a drag strip on pages without a toolbar.
+func (Base) Header(f ui.C, _ gfx.Theme) {
+	ui.Row(f).Height(kit.DragStrip).MovesWindow()
 }

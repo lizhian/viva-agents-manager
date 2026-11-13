@@ -11,7 +11,7 @@ import (
 
 // schemaVersion is how many migrations have been applied. It lives in SQLite's
 // own user_version, so the file itself says which shape it is in.
-const schemaVersion = 1
+const schemaVersion = 2
 
 // migrations are applied in order, each raising user_version by one. They only
 // ever add: an older application opening a newer file refuses to run it rather
@@ -31,6 +31,14 @@ CREATE TABLE skills (
 	installed_at INTEGER NOT NULL,
 	UNIQUE(source_id, name)
 );`)
+		return err
+	},
+	func(db *sql.DB) error {
+		_, err := db.Exec(`CREATE TABLE expired_skills (
+   source TEXT NOT NULL,
+   skill TEXT NOT NULL,
+   PRIMARY KEY(source, skill)
+  );`)
 		return err
 	},
 }
@@ -82,8 +90,8 @@ func migrate(db *sql.DB) error {
 	return nil
 }
 
-// rebuild rewrites the index from the disk. The index is a pure function of the
-// folders, so there is nothing to merge: it is emptied and filled again.
+// rebuild rewrites only the derived directory index. User expiration marks
+// live in a separate table without foreign keys to these disposable rows.
 func (l *Library) rebuild() {
 	if l.db == nil {
 		return

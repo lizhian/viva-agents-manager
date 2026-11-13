@@ -88,7 +88,7 @@ func stageSkills(prepared []domain.PreparedSkill, stage string) error {
 	seen := make(map[string]bool, len(prepared))
 	for _, item := range prepared {
 		if !domain.ValidSkillName(item.Name) {
-			return fmt.Errorf("技能名 %q 不能作为目录名", item.Name)
+			return fmt.Errorf("技能名 %q 不可用（@ 为保留分隔符）", item.Name)
 		}
 		if seen[item.Name] {
 			return fmt.Errorf("技能 %s 出现了两次", item.Name)

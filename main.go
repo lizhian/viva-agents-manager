@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bytes"
+	_ "embed"
+	"image"
+	"image/draw"
+	"image/png"
 	"log"
 
 	"github.com/vivaui/viva/app"
-	"github.com/vivaui/viva/ui"
+	"github.com/vivaui/viva/gfx"
 
 	"github.com/lizhian/viva-agents-manager/internal/domain"
 	"github.com/lizhian/viva-agents-manager/internal/library"
@@ -12,10 +17,19 @@ import (
 	"github.com/lizhian/viva-agents-manager/internal/skillinstall"
 )
 
+//go:embed assets/app-icon.png
+var appIconPNG []byte
+
 func main() {
 	window := shell.New(openStore())
-	var canvas ui.Canvas
-	if err := app.RunCanvas(window.Config(), &canvas); err != nil {
+	config := window.Config()
+	icon, err := loadAppIcon()
+	if err != nil {
+		log.Fatal(err)
+	}
+	config.Icon = icon
+	var canvas gfx.Canvas
+	if err := app.RunCanvas(config, &canvas); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -30,4 +44,17 @@ func openStore() domain.Store {
 		return domain.NewMemory()
 	}
 	return store
+}
+
+// loadAppIcon supplies straight RGBA pixels to Viva for unbundled development
+// runs. Packaged applications use the same PNG through viva.toml.
+func loadAppIcon() (app.WindowIcon, error) {
+	source, err := png.Decode(bytes.NewReader(appIconPNG))
+	if err != nil {
+		return app.WindowIcon{}, err
+	}
+	bounds := source.Bounds()
+	pixels := image.NewNRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
+	draw.Draw(pixels, pixels.Bounds(), source, bounds.Min, draw.Src)
+	return app.WindowIcon{Size: bounds.Dx(), RGBA: pixels.Pix}, nil
 }

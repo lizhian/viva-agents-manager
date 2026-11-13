@@ -3,7 +3,7 @@ package icons
 import (
 	"testing"
 
-	"github.com/vivaui/viva/ui"
+	"github.com/vivaui/viva/gfx"
 )
 
 // TestTheWindowIconsCompiled checks that every glyph the window draws came out
@@ -11,13 +11,15 @@ import (
 // that compiles to no commands draws nothing, and under `viva dev` nothing is
 // what a working glyph looks like too, so only a test can tell the two apart.
 func TestTheWindowIconsCompiled(t *testing.T) {
-	for name, icon := range map[string]ui.Icon{
-		"sun":         Sun,
-		"moon":        Moon,
-		"plus":        Plus,
-		"refresh-cw":  RefreshCw,
-		"x":           X,
-		"folder-open": FolderOpen,
+	for name, icon := range map[string]gfx.Icon{
+		"sun":              Sun,
+		"chevrons-down-up": ChevronsDownUp,
+		"chevrons-up-down": ChevronsUpDown,
+		"moon":             Moon,
+		"plus":             Plus,
+		"refresh-cw":       RefreshCw,
+		"x":                X,
+		"folder-open":      FolderOpen,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if icon.ViewBox != 24 {

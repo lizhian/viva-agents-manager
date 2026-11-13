@@ -4,7 +4,7 @@
 package kit
 
 import (
-	"github.com/vivaui/viva/ui"
+	"github.com/vivaui/viva/gfx"
 
 	"github.com/lizhian/viva-agents-manager/internal/icons"
 )
@@ -21,11 +21,11 @@ const (
 type Theme struct{ dark bool }
 
 // Current is the theme to paint with.
-func (t *Theme) Current() ui.Theme {
+func (t *Theme) Current() gfx.Theme {
 	if t.dark {
-		return ui.DarkTheme()
+		return gfx.DarkTheme()
 	}
-	return ui.LightTheme()
+	return gfx.LightTheme()
 }
 
 // Dark reports the current appearance.
@@ -38,7 +38,7 @@ func (t *Theme) Toggle() { t.dark = !t.dark }
 // triangles, which `viva dev` drops when it replays a frame, so the glyph is
 // blank there while the button stays announced and clickable; `go run` and a
 // built program draw it.
-func (t *Theme) Icon() ui.Icon {
+func (t *Theme) Icon() gfx.Icon {
 	if t.dark {
 		return icons.Sun
 	}

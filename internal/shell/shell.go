@@ -4,7 +4,7 @@ package shell
 
 import (
 	"github.com/vivaui/viva/app"
-	"github.com/vivaui/viva/flex"
+	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/ui"
 
 	"github.com/lizhian/viva-agents-manager/internal/domain"
@@ -25,19 +25,20 @@ const (
 // Shell owns the window: the pages the navigation selects between, the two
 // splitters, and the theme.
 type Shell struct {
-	tree    ui.Tree
+	tree    gfx.Tree
 	theme   kit.Theme
 	nav     kit.Nav
 	pages   []pages.Page
 	current int
 
-	split   flex.SplitterState
-	natural float32
-	sized   bool
-	view    flex.View
+	split      ui.SplitterState
+	natural    float32
+	sized      bool
+	view       *ui.Page
+	paintTheme gfx.Theme
 
-	divider     ui.ID
-	pageDivider ui.ID
+	divider     gfx.ID
+	pageDivider gfx.ID
 	trailing    float32
 
 	// invalidator wakes the window for work a page finished off the window
@@ -65,6 +66,7 @@ func New(store domain.Store) *Shell {
 		ToggleID: s.tree.ID(root, "theme"),
 		Theme:    &s.theme,
 	}
+	s.view = ui.NewPage(ui.PageConfig{Tree: &s.tree, Theme: &s.paintTheme})
 	return s
 }
 
@@ -92,7 +94,7 @@ func (s *Shell) Config() app.Config {
 	config.OnWake = s.wake
 	// Every page's fields are handed to the platform at once, so typing reaches
 	// whichever one has focus.
-	config.TextInput = flex.Fields(s.fields()...)
+	config.TextInput = ui.Fields(s.fields()...)
 	return config
 }
 
@@ -106,11 +108,11 @@ func (s *Shell) wake() {
 // page is the selected page.
 func (s *Shell) page() pages.Page { return s.pages[s.current] }
 
-func (s *Shell) paint(canvas *ui.Canvas, size ui.Size) {
+func (s *Shell) paint(canvas *gfx.Canvas, size gfx.Size) {
 	theme := s.theme.Current()
 	s.fit(canvas)
 
-	bounds := ui.Rect{Width: size.Width, Height: size.Height}
+	bounds := gfx.Rect{Width: size.Width, Height: size.Height}
 	canvas.Fill(bounds, theme.Background)
 	// Carry the pane colours to the middle of each splitter's strip, so a
 	// divider's line falls on the boundary between panes rather than four pixels
@@ -124,16 +126,15 @@ func (s *Shell) paint(canvas *ui.Canvas, size ui.Size) {
 	// The page is laid out first and painted afterwards: what a page draws
 	// itself is a canvas component, not a flex node, and it needs the
 	// rectangle the layout gave it.
-	f := s.view.Begin(canvas, theme, bounds)
-	s.declare(f, theme)
-	f.End()
+	s.paintTheme = theme
+	s.view.Draw(canvas, bounds, s.declareUI)
 	s.page().Overlay(canvas, theme)
 }
 
 // declare paints the navigation, the panes and the selected page.
-func (s *Shell) declare(f *flex.Frame, theme ui.Theme) {
+func (s *Shell) declare(f ui.C, theme gfx.Theme) {
 	{
-		f.Row().Fill().Children(func() {
+		ui.Row(f).Fill().Children(func() {
 			s.nav.Draw(f, s.split.Pos, s.current, func(index int) { s.current = index })
 
 			// The sidebar may grow, but not shrink past the width its labels need.
@@ -142,17 +143,17 @@ func (s *Shell) declare(f *flex.Frame, theme ui.Theme) {
 			// next sibling, so that row has to grow for the sidebar to be able to.
 			pane := s.page().Pane()
 			if pane == nil {
-				f.Splitter(s.divider, &s.split).Mins(s.natural, contentMin)
+				ui.Splitter(f, &s.split).Mins(s.natural, contentMin)
 				s.content(f, theme)
 				return
 			}
-			f.Splitter(s.divider, &s.split).Mins(s.natural, pane.Min)
+			ui.Splitter(f, &s.split).Mins(s.natural, pane.Min)
 			// FillWidth for the same reason as the content column below: the row's
 			// preferred width is the sum of its children's, and the page's column
 			// would otherwise claim the room the navigation needs.
-			f.Row().FillWidth().Grow(1).Children(func() {
+			ui.Row(f).FillWidth().Grow(1).Children(func() {
 				pane.Draw(f, theme, pane.Split.Pos)
-				f.Splitter(s.pageDivider, pane.Split).Mins(pane.Min, contentMinBeside)
+				ui.Splitter(f, pane.Split).Mins(pane.Min, contentMinBeside)
 				s.content(f, theme)
 			})
 		})
@@ -161,49 +162,49 @@ func (s *Shell) declare(f *flex.Frame, theme ui.Theme) {
 }
 
 // content paints the body of the selected page.
-func (s *Shell) content(f *flex.Frame, theme ui.Theme) {
+func (s *Shell) content(f ui.C, theme gfx.Theme) {
 	// FillWidth, not Grow alone: a column's preferred width is the sum of its
 	// children's, and one long paragraph would make that wider than the window and
 	// shrink the navigation and the page's column to make room for it.
-	f.Column().FillWidth().Grow(1).Children(func() {
-		// The page names itself in its own body, so this column has no header; the
-		// strip stays as the place the window is dragged from, and is as tall as
-		// the gap above the page's search box so the two columns start level.
-		f.Row().Height(kit.DragStrip).PadSides(0, 16+s.trailing, 0, 16).MovesWindow()
+	ui.Column(f).FillWidth().Grow(1).Children(func() {
+		s.page().Header(f, theme)
 		s.page().Content(f, theme)
 	})
 }
 
-// onScroll gives the wheel to the selected page: the skill document is the one
-// thing in the window that is taller than the room it has.
-func (s *Shell) onScroll(event ui.ScrollEvent) ui.EventResult {
+// onScroll routes the wheel to a list under the pointer before the page
+// handles its independently painted documents.
+func (s *Shell) onScroll(event gfx.ScrollEvent) gfx.EventResult {
+	if result := s.view.Wheel(event); result.Handled {
+		return result
+	}
 	return s.page().Scroll(event)
 }
 
 // onPointer gives a pointer event to the selected page.
-func (s *Shell) onPointer(event ui.PointerEvent) ui.EventResult {
+func (s *Shell) onPointer(event gfx.PointerEvent) gfx.EventResult {
 	return s.page().Pointer(event)
 }
 
 // onShortcut gives a chord to the selected page.
-func (s *Shell) onShortcut(event ui.KeyEvent) ui.EventResult {
+func (s *Shell) onShortcut(event gfx.KeyEvent) gfx.EventResult {
 	return s.page().Shortcut(event)
 }
 
 // onKey gives the arrow keys to a focused splitter.
-func (s *Shell) onKey(event ui.KeyEvent) ui.EventResult {
+func (s *Shell) onKey(event gfx.KeyEvent) gfx.EventResult {
 	if result := s.split.Key(event); result.Handled {
 		return result
 	}
 	if pane := s.page().Pane(); pane != nil {
 		return pane.Split.Key(event)
 	}
-	return ui.EventResult{}
+	return gfx.EventResult{}
 }
 
 // fields collects every page's text fields for the platform's text service.
-func (s *Shell) fields() []*flex.Field {
-	var fields []*flex.Field
+func (s *Shell) fields() []*ui.Field {
+	var fields []*ui.Field
 	for _, page := range s.pages {
 		fields = append(fields, page.Fields()...)
 	}
@@ -212,7 +213,7 @@ func (s *Shell) fields() []*flex.Field {
 
 // fit gives the navigation column the width of its widest label the first time
 // the window is painted, which is when text can be measured.
-func (s *Shell) fit(canvas *ui.Canvas) {
+func (s *Shell) fit(canvas *gfx.Canvas) {
 	if s.sized {
 		return
 	}
@@ -229,3 +230,5 @@ func pageNames(list []pages.Page) []string {
 	}
 	return names
 }
+
+func (s *Shell) declareUI(f ui.C) { s.declare(f, s.paintTheme) }

@@ -22,7 +22,7 @@ func TestMemoryInstall(t *testing.T) {
 	if last.Repo != "anthropics/skills" || last.Label() != "anthropics/skills" {
 		t.Fatalf("installed source = %+v, want the trimmed repository", last)
 	}
-	if last.Name != "anthropics_@_skills" {
+	if last.Name != "anthropics@skills" {
 		t.Fatalf("installed directory = %q, want the safe name", last.Name)
 	}
 	if last.InstalledAt.IsZero() {

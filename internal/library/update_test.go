@@ -44,7 +44,7 @@ func TestUpdateBringsTheSourceInLineWithTheRemote(t *testing.T) {
 		t.Fatalf("results = %+v, want one success", results)
 	}
 
-	source := filepath.Join(library.config.Root, "a_@_b")
+	source := filepath.Join(library.config.Root, "a@b")
 	if _, err := os.Stat(filepath.Join(source, "code-review")); !os.IsNotExist(err) {
 		t.Fatal("a skill the repository dropped is still in the library")
 	}
