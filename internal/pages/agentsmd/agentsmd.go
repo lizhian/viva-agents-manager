@@ -18,8 +18,9 @@ import (
 )
 
 type Options struct {
-	Storage     instructions.Config
-	Invalidator *app.Invalidator
+	TitlebarTrailing float32
+	Storage          instructions.Config
+	Invalidator      *app.Invalidator
 }
 type draft struct {
 	title, body         *text.Editor

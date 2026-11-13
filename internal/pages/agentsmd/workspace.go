@@ -39,7 +39,7 @@ func (v *editorView) declare(f ui.C, theme gfx.Theme) {
 	}
 	// The title and icon-only actions share the top bar, as in motty. The action
 	// group moves to its own line only when the title would have less than 120px.
-	ui.Flow(f).FillWidth().Gap(6).LineGap(4).MovesWindow().Children(func() {
+	ui.Flow(f).FillWidth().PadRight(v.p.opts.TitlebarTrailing).Gap(6).LineGap(4).MovesWindow().Children(func() {
 		ui.Row(f).Basis(0).Grow(1).MinWidth(160).Height(24).Items(ui.Center).Gap(6).Children(func() {
 			if iconAction(f, theme, v.ids["library"], "显示 / 隐藏片段列表", noteIcons["PanelLeft"]) {
 				v.p.toggleLibrary()

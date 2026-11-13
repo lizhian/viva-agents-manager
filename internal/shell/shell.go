@@ -58,6 +58,7 @@ func NewWithOptions(store domain.Store, options agentsmd.Options) *Shell {
 	_, s.trailing = app.TitlebarInsets()
 
 	options.Invalidator = &s.invalidator
+	options.TitlebarTrailing = s.trailing
 	s.pages = []pages.Page{
 		skills.New(&s.tree, s.tree.Sub(root, s.tree.Name("skills")), store, &s.invalidator),
 		agentsmd.New(&s.tree, s.tree.Sub(root, s.tree.Name("agentsmd")), options),
@@ -198,7 +199,7 @@ func (s *Shell) content(f ui.C, theme gfx.Theme) {
 	// children's, and one long paragraph would make that wider than the window and
 	// shrink the navigation and the page's column to make room for it.
 	ui.Column(f).FillWidth().Grow(1).Children(func() {
-		s.page().Header(f, theme)
+		ui.Column(f).FillWidth().PadRight(s.trailing).Children(func() { s.page().Header(f, theme) })
 		s.page().Content(f, theme)
 	})
 }

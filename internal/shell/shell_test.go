@@ -784,13 +784,16 @@ func TestSkillSwitchStaysRightAlignedWhenPaneWidens(t *testing.T) {
 }
 
 func TestDetailToolbarExpirationDisablesListSwitch(t *testing.T) {
-	_, driver, root := newLibraryWindow(t)
+	window, driver, root := newLibraryWindow(t)
 	installStub(t, driver)
 	label := fmt.Sprintf("总字数 %d", domain.ParseDocument([]byte(stubDeclared()), "").CharacterCount)
 	if !drawn(t, driver, label) {
 		t.Fatal("missing full-file character count")
 	}
 	header := hitBounds(t, driver, "过期")
+	if header.X+header.Width > driver.Frame().Width-window.trailing {
+		t.Fatal("expiration switch overlaps native window controls")
+	}
 	clickLabel(t, driver, "启用技能 owner/repo/alpha")
 	clickLabel(t, driver, "过期")
 	link := filepath.Join(filepath.Dir(root), "enabled", "vam@owner@repo@alpha")
