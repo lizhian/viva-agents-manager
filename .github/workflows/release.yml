@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version tag to validate without publishing
+        required: true
+        default: v1.0.0
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.version || github.ref_name }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Check release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Prepare tag version
+        run: python3 tools/release.py prepare "$RELEASE_TAG"
+      - name: Check and test
+        run: |
+          go vet ./...
+          go test ./... -count=1
+
+  build:
+    name: Package ${{ matrix.target }}/${{ matrix.arch }}
+    needs: check
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: darwin, arch: amd64, runner: macos-15-intel, formats: 'dmg,zip' }
+          - { target: darwin, arch: arm64, runner: macos-15-intel, formats: 'dmg,zip' }
+          - { target: linux, arch: amd64, runner: ubuntu-24.04, formats: 'tar.gz,deb' }
+          - { target: linux, arch: arm64, runner: ubuntu-24.04, formats: 'tar.gz,deb' }
+          - { target: windows, arch: amd64, runner: ubuntu-24.04, formats: 'nsis,zip' }
+          - { target: windows, arch: arm64, runner: ubuntu-24.04, formats: 'nsis,zip' }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Prepare tag version
+        run: python3 tools/release.py prepare "$RELEASE_TAG"
+      - name: Install pinned Viva packager
+        run: |
+          viva_version=$(go list -m -f '{{.Version}}' github.com/vivaui/viva)
+          go install "github.com/vivaui/viva/cmd/viva@${viva_version}"
+      - name: Install NSIS
+        if: matrix.target == 'windows'
+        run: sudo apt-get update && sudo apt-get install -y nsis
+      - name: Build packages
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          FORMATS: ${{ matrix.formats }}
+        run: |
+          output=bin/packages
+          if [ "$TARGET" = darwin ]; then
+            output="$output/Viva Agents Manager.app"
+          fi
+          viva package --target "$TARGET" --arch "$ARCH" --format "$FORMATS" --no-sign -o "$output"
+          python3 tools/release.py verify "$RELEASE_TAG" --target "$TARGET" --arch "$ARCH" --dir bin/packages
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages-${{ matrix.target }}-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            bin/packages/*.dmg
+            bin/packages/*.zip
+            bin/packages/*.deb
+            bin/packages/*.tar.gz
+            bin/packages/*-setup.exe
+
+  publish:
+    name: Publish verified release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: bin/release
+      - name: Verify complete matrix and checksum
+        run: |
+          python3 tools/release.py checksums "$RELEASE_TAG" --dir bin/release
+          cd bin/release
+          sha256sum --check SHA256SUMS
+      - name: Publish GitHub release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A failed upload leaves a draft; published releases are never rewritten.
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft > "$RUNNER_TEMP/release.json" 2>/dev/null; then
+            if [ "$(jq -r .isDraft "$RUNNER_TEMP/release.json")" != true ]; then
+              echo "::error::Release $RELEASE_TAG is already published"
+              exit 1
+            fi
+          else
+            notes="docs/releases/${RELEASE_TAG#v}.md"
+            if [ -f "$notes" ]; then
+              gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "Viva Agents Manager $RELEASE_TAG" --notes-file "$notes"
+            else
+              gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "Viva Agents Manager $RELEASE_TAG" --generate-notes
+            fi
+          fi
+          gh release upload "$RELEASE_TAG" bin/release/* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

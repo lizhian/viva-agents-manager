@@ -1,6 +1,7 @@
 package kit
 
 import (
+	"github.com/lizhian/viva-agents-manager/internal/version"
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/ui"
 )
@@ -70,7 +71,7 @@ func (n *Nav) Draw(f ui.C, width float32, selected int, onSelect func(index int)
 			}
 		})
 		ui.Row(f).Height(36).PadSides(0, 10, 0, 14).Items(ui.Center).Children(func() {
-			ui.Text(f, "v0.1.0").FontSize(11).Muted()
+			ui.Text(f, version.Label).FontSize(11).Muted()
 			ui.Spacer(f)
 			spec := IconButtonSpec{ID: n.ToggleID, Label: n.Theme.Label(), Icon: n.Theme.Icon()}
 			if IconButton(f, theme, spec) {

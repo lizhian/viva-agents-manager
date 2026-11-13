@@ -1,10 +1,26 @@
 [app]
 name = "Viva Agents Manager"
 id = "com.github.lizhian.viva-agents-manager"
-version = "0.1.0"
+version = "1.0.0"
 executable = "viva-agents-manager"
 package = "."
 icon = "assets/app-icon.png"
 
 [build]
 out = "bin"
+
+[mac]
+min_system = "13.0"
+category = "public.app-category.developer-tools"
+copyright = "lizhian"
+
+[windows]
+publisher = "lizhian"
+url = "https://github.com/lizhian/viva-agents-manager"
+
+[linux]
+category = "Development"
+comment = "Manage local agent skills and AGENTS.md instruction snippets"
+maintainer = "lizhian <503457938@qq.com>"
+homepage = "https://github.com/lizhian/viva-agents-manager"
+keywords = ["agents", "skills", "development"]

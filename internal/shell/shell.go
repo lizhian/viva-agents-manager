@@ -11,7 +11,6 @@ import (
 	"github.com/lizhian/viva-agents-manager/internal/kit"
 	"github.com/lizhian/viva-agents-manager/internal/pages"
 	"github.com/lizhian/viva-agents-manager/internal/pages/agentsmd"
-	"github.com/lizhian/viva-agents-manager/internal/pages/mcp"
 	"github.com/lizhian/viva-agents-manager/internal/pages/skills"
 )
 
@@ -48,17 +47,20 @@ type Shell struct {
 }
 
 // New builds the window around the store that holds what it manages.
-func New(store domain.Store) *Shell {
+func New(store domain.Store) *Shell { return NewWithOptions(store, agentsmd.Options{}) }
+
+// NewWithOptions injects instruction storage.
+func NewWithOptions(store domain.Store, options agentsmd.Options) *Shell {
 	s := &Shell{}
 	root := s.tree.Feature("shell")
 	s.divider = s.tree.ID(root, "divider")
 	s.pageDivider = s.tree.ID(root, "divider-page")
 	_, s.trailing = app.TitlebarInsets()
 
+	options.Invalidator = &s.invalidator
 	s.pages = []pages.Page{
 		skills.New(&s.tree, s.tree.Sub(root, s.tree.Name("skills")), store, &s.invalidator),
-		mcp.New(),
-		agentsmd.New(),
+		agentsmd.New(&s.tree, s.tree.Sub(root, s.tree.Name("agentsmd")), options),
 	}
 	s.nav = kit.Nav{
 		Items:    pageNames(s.pages),
@@ -94,7 +96,28 @@ func (s *Shell) Config() app.Config {
 	config.OnWake = s.wake
 	// Every page's fields are handed to the platform at once, so typing reaches
 	// whichever one has focus.
-	config.TextInput = ui.Fields(s.fields()...)
+	fields := ui.Fields(s.fields()...)
+	config.TextInput = func(context app.TextInputContext) *app.TextInput {
+		if page, ok := s.page().(interface {
+			TextInput(app.TextInputContext) *app.TextInput
+		}); ok {
+			return page.TextInput(context)
+		}
+		return fields(context)
+	}
+	config.OnCloseRequest = func(allow func()) {
+		for i, page := range s.pages {
+			if closer, ok := page.(interface{ RequestClose(func()) }); ok {
+				closer.RequestClose(allow)
+				if attention, ok := page.(interface{ NeedsAttention() bool }); ok && attention.NeedsAttention() {
+					s.current = i
+					s.invalidator.Invalidate()
+				}
+				return
+			}
+		}
+		allow()
+	}
 	return config
 }
 
@@ -135,7 +158,15 @@ func (s *Shell) paint(canvas *gfx.Canvas, size gfx.Size) {
 func (s *Shell) declare(f ui.C, theme gfx.Theme) {
 	{
 		ui.Row(f).Fill().Children(func() {
-			s.nav.Draw(f, s.split.Pos, s.current, func(index int) { s.current = index })
+			s.nav.Draw(f, s.split.Pos, s.current, func(index int) {
+				if index == s.current {
+					return
+				}
+				if page, ok := s.page().(interface{ BeforeLeave() bool }); ok && !page.BeforeLeave() {
+					return
+				}
+				s.current = index
+			})
 
 			// The sidebar may grow, but not shrink past the width its labels need.
 			// What follows it is either the content, or one row holding the page's
@@ -183,6 +214,9 @@ func (s *Shell) onScroll(event gfx.ScrollEvent) gfx.EventResult {
 
 // onPointer gives a pointer event to the selected page.
 func (s *Shell) onPointer(event gfx.PointerEvent) gfx.EventResult {
+	if result := s.view.Pointer(event); result.Handled {
+		return result
+	}
 	return s.page().Pointer(event)
 }
 
@@ -193,6 +227,16 @@ func (s *Shell) onShortcut(event gfx.KeyEvent) gfx.EventResult {
 
 // onKey gives the arrow keys to a focused splitter.
 func (s *Shell) onKey(event gfx.KeyEvent) gfx.EventResult {
+	if result := s.view.Key(event); result.Handled {
+		return result
+	}
+	if page, ok := s.page().(interface {
+		Key(gfx.KeyEvent) gfx.EventResult
+	}); ok {
+		if result := page.Key(event); result.Handled {
+			return result
+		}
+	}
 	if result := s.split.Key(event); result.Handled {
 		return result
 	}
