@@ -80,7 +80,7 @@ func loginPath(ctx context.Context) string {
 	// An interactive shell may print its own output, so the marker is searched
 	// for rather than the whole output being trusted.
 	text := string(out)
-	start := strings.LastIndex(text, "__VIVA_PATH__")
+	start := strings.Index(text, "__VIVA_PATH__")
 	if start < 0 {
 		return path
 	}

@@ -1,9 +1,11 @@
 package skillinstall
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/lizhian/viva-agents-manager/internal/domain"
@@ -75,5 +77,26 @@ func TestLastLine(t *testing.T) {
 	message := "╭───────────╮\n│           │\n│  ⚠ 仓库不存在  │\n│           │\n╰───────────╯\n"
 	if got, want := lastLine(message), "⚠ 仓库不存在"; got != want {
 		t.Fatalf("lastLine = %q, want %q", got, want)
+	}
+}
+
+// Finder supplies a minimal PATH; the login shell supplies Node's bin folder.
+func TestPrepareUsesLoginShellPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX login shell")
+	}
+	dir := t.TempDir()
+	shell := filepath.Join(dir, "shell")
+	if err := os.WriteFile(shell, []byte("#!/bin/sh\nprintf 'startup noise\\n__VIVA_PATH__%s__VIVA_PATH__\\n' \"$TEST_NODE_BIN\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "npx"), []byte("#!/bin/sh\ncase \"$PATH\" in \"$TEST_NODE_BIN\":*) ;; *) exit 1;; esac\nprintf '[]\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("SHELL", shell)
+	t.Setenv("TEST_NODE_BIN", dir)
+	if _, err := (Npx{}).Prepare(context.Background(), "owner/repo", t.TempDir()); err != nil {
+		t.Fatalf("installed npx from login shell not usable: %v", err)
 	}
 }
