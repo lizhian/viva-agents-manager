@@ -3,7 +3,6 @@ package domain
 import (
 	"context"
 	"path"
-	"strings"
 	"time"
 )
 
@@ -39,15 +38,13 @@ func (m *Memory) Sources() []Source { return m.sources }
 // Install records the repository as a source, naming its directory the way the
 // library would. Nothing is downloaded: this is the fake.
 func (m *Memory) Install(ctx context.Context, repo string, progress func(Progress)) error {
-	repo = strings.TrimSpace(repo)
-	switch {
-	case repo == "":
-		return ErrEmptyRepo
-	case !ValidRepo(repo):
-		return ErrBadRepo
+	normalized, err := NormalizeSource(repo)
+	if err != nil {
+		return err
 	}
+	repo = normalized
 	for _, source := range m.sources {
-		if source.Repo == repo {
+		if identity, err := NormalizeSource(source.Repo); err == nil && identity == normalized {
 			return ErrAlreadyInstalled
 		}
 	}
@@ -153,3 +150,14 @@ func (m *Memory) SetExpired(source, skill string, expired bool) error {
 }
 
 func (m *Memory) OpenSkillFolder(source, skill string) error { return ErrUnsupported }
+
+// Remove deletes a source from the in-memory library.
+func (m *Memory) Remove(name string) error {
+	for i, source := range m.sources {
+		if source.Name == name {
+			m.sources = append(m.sources[:i], m.sources[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNoSkills
+}

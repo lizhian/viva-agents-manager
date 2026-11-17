@@ -35,7 +35,7 @@ func (l *Library) scan() []domain.Source {
 		}
 		sources = append(sources, domain.Source{
 			Name:        entry.Name(),
-			Repo:        domain.RepoOf(entry.Name()),
+			Repo:        l.sourceAddress(entry.Name()),
 			InstalledAt: info.ModTime(),
 			Skills:      skills,
 		})

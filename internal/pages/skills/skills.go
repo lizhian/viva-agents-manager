@@ -92,15 +92,17 @@ type pending struct {
 type Page struct {
 	pages.Base
 
-	tree        *gfx.Tree
-	scope       gfx.Scope
-	store       domain.Store
-	invalidator *app.Invalidator
-	split       ui.SplitterState
-	pane        pages.Pane
-	ids         ids
-	modal       *kit.Modal
-	treeView    kit.Tree
+	tree         *gfx.Tree
+	scope        gfx.Scope
+	store        domain.Store
+	invalidator  *app.Invalidator
+	split        ui.SplitterState
+	pane         pages.Pane
+	ids          ids
+	modal        *kit.Modal
+	removeModal  *kit.Modal
+	removeSource string
+	treeView     kit.Tree
 
 	sources            []domain.Source
 	branches           []kit.Branch
@@ -164,6 +166,7 @@ type ids struct {
 	update       gfx.ID
 	folder       gfx.ID
 	skillFolder  gfx.ID
+	remove       gfx.ID
 	fold         gfx.ID
 	previewSplit gfx.ID
 	previewClose gfx.ID
@@ -183,6 +186,7 @@ func New(tree *gfx.Tree, scope gfx.Scope, store domain.Store, invalidator *app.I
 		update:       tree.ID(scope, "update"),
 		folder:       tree.ID(scope, "folder"),
 		skillFolder:  tree.ID(scope, "skill-folder"),
+		remove:       tree.ID(scope, "remove-source"),
 		fold:         tree.ID(scope, "fold"),
 		previewSplit: tree.ID(scope, "preview-split"),
 		previewClose: tree.ID(scope, "preview-close"),
@@ -190,6 +194,7 @@ func New(tree *gfx.Tree, scope gfx.Scope, store domain.Store, invalidator *app.I
 	p.main.links = tree.Sub(scope, tree.Name("links"))
 	p.preview.links = tree.Sub(scope, tree.Name("preview-links"))
 	p.modal = kit.NewModal(tree, scope, "install")
+	p.removeModal = kit.NewModal(tree, scope, "remove")
 	p.pane = pages.Pane{Split: &p.split, Min: paneMin, Draw: p.drawPane}
 	// The callbacks are made once: they read the page, so they follow a reload
 	// without being rebuilt.
@@ -646,15 +651,41 @@ func markdownStyle() components.MarkdownStyle {
 // as the network takes, so the dialog stays open with the stage it has reached
 // and the reason it failed, rather than closing and leaving the page silent.
 func (p *Page) Dialog(f ui.C, theme gfx.Theme) {
+	p.removeModal.Draw(f, kit.ModalSpec{Title: "删除技能来源", Width: 480}, func() {
+		label := p.removeSource
+		for _, source := range p.sources {
+			if source.Name == p.removeSource {
+				label = source.Label()
+				break
+			}
+		}
+		ui.Paragraph(f, "删除来源「"+label+"」及其全部技能，同时移除启用链接。此操作无法撤销。", 4).FontSize(13)
+	}, func() {
+		if ui.Button(f, "取消").Outline().Clicked() {
+			p.removeModal.Open = false
+		}
+		if ui.Button(f, "确认删除").Clicked() {
+			err := p.store.Remove(p.removeSource)
+			p.updateFailed = err != nil
+			if err != nil {
+				p.updateStatus = "删除失败：" + err.Error()
+			} else {
+				p.updateStatus = "来源已删除"
+			}
+			p.removeModal.Open = false
+			p.reload()
+		}
+	})
+
 	wasOpen := p.modal.Open
 	p.modal.Draw(f, kit.ModalSpec{Title: "安装 Skill 来源", Width: 480, Focus: p.ids.repo},
 		func() {
 			ui.Column(f).FillWidth().Gap(8).Children(func() {
-				ui.TextFieldID(f, p.ids.repo, &p.repo, "GitHub 仓库", "owner/repo").FillWidth()
+				ui.TextFieldID(f, p.ids.repo, &p.repo, "技能来源", "owner/repo 或 https://archify.si").FillWidth()
 				if p.installing {
 					ui.Text(f, progressLabel(p.progress)).FontSize(13).Muted()
 				} else {
-					ui.Paragraph(f, "填写 owner/repo，需要本机可运行 npx skills。@ 为保留分隔符。", 3).
+					ui.Paragraph(f, "填写 owner/repo 或 HTTP(S) 网址，需要本机可运行 npx skills。", 3).
 						FontSize(13).Muted()
 				}
 				if p.installErr != "" {
@@ -668,7 +699,7 @@ func (p *Page) Dialog(f ui.C, theme gfx.Theme) {
 			}
 			repo := strings.TrimSpace(p.repo.Text())
 			if ui.Button(f, "开始安装").
-				Disabled(p.installing || !domain.ValidRepo(repo)).Clicked() {
+				Disabled(p.installing || !domain.ValidInstallSource(repo)).Clicked() {
 				p.startInstall(repo)
 			}
 		})
@@ -987,13 +1018,13 @@ func progressLabel(progress domain.Progress) string {
 func failureMessage(err error) string {
 	switch {
 	case errors.Is(err, domain.ErrEmptyRepo):
-		return "请填写仓库"
+		return "请填写技能来源"
 	case errors.Is(err, domain.ErrBadRepo):
-		return "仓库须为 owner/repo，@ 为保留分隔符"
+		return "来源须为 owner/repo 或有效的 HTTP(S) 网址"
 	case errors.Is(err, domain.ErrAlreadyInstalled):
-		return "这个仓库已经装过了"
+		return "这个来源已经装过了"
 	case errors.Is(err, domain.ErrNoSkills):
-		return "这个仓库里没有可安装的技能"
+		return "这个来源没有可安装的技能"
 	case errors.Is(err, domain.ErrNpxMissing):
 		return "未找到 npx，请安装 Node.js 并检查 PATH"
 	default:
@@ -1074,6 +1105,11 @@ func (p *Page) Header(f ui.C, theme gfx.Theme) {
 				p.expirySlot = ui.Slot(f).Size(width, height).Shrink(0).MarginSides(0, 0, 0, -4)
 				p.expiryVisible = true
 			})
+			if kit.IconButton(f, theme, kit.IconButtonSpec{ID: p.ids.remove, Label: "删除来源", Icon: icons.Trash, Disabled: p.installing || p.updating}) {
+				p.removeSource = p.chosen.source
+				p.removeModal.Open = true
+			}
+
 		})
 		ui.Row(f).Height(1).Shrink(0).FillWidth().Background(theme.Border)
 	})

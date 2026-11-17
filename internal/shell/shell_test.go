@@ -300,7 +300,7 @@ func TestInstallDialog(t *testing.T) {
 	_, driver := newWindow(t)
 
 	clickLabel(t, driver, "安装")
-	for _, want := range []string{"安装 Skill 来源", "owner/repo", "开始安装", "取消"} {
+	for _, want := range []string{"安装 Skill 来源", "owner/repo 或 https://archify.si", "开始安装", "取消"} {
 		if !drawn(t, driver, want) {
 			t.Fatalf("%q is not drawn in the dialog", want)
 		}
@@ -330,7 +330,7 @@ func TestInstallFromTheDialog(t *testing.T) {
 	_, driver, _ := newLibraryWindow(t)
 
 	clickLabel(t, driver, "安装")
-	clickLabel(t, driver, "GitHub 仓库")
+	clickLabel(t, driver, "技能来源")
 	if err := driver.Type("anthropics/skills"); err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestInstallReportsAConflict(t *testing.T) {
 
 	for attempt := 0; attempt < 2; attempt++ {
 		clickLabel(t, driver, "安装")
-		clickLabel(t, driver, "GitHub 仓库")
+		clickLabel(t, driver, "技能来源")
 		if err := driver.Type("a/b"); err != nil {
 			t.Fatal(err)
 		}
@@ -360,7 +360,7 @@ func TestInstallReportsAConflict(t *testing.T) {
 			settle(t, driver, func() bool { return !drawn(t, driver, "安装 Skill 来源") })
 			continue
 		}
-		settle(t, driver, func() bool { return drawn(t, driver, "这个仓库已经装过了") })
+		settle(t, driver, func() bool { return drawn(t, driver, "这个来源已经装过了") })
 		if !drawn(t, driver, "安装 Skill 来源") {
 			t.Fatal("the dialog closed on a failed install")
 		}
@@ -405,7 +405,7 @@ func TestPaneButtonsSitAboveTheSearchBox(t *testing.T) {
 func installStub(t *testing.T, driver *app.Driver) {
 	t.Helper()
 	clickLabel(t, driver, "安装")
-	clickLabel(t, driver, "GitHub 仓库")
+	clickLabel(t, driver, "技能来源")
 	if err := driver.Type("owner/repo"); err != nil {
 		t.Fatal(err)
 	}
@@ -879,4 +879,33 @@ func TestDetailFolderRevealsInstalledSkill(t *testing.T) {
 		path, ok := driver.LastRevealedPath()
 		return ok && path == want
 	})
+}
+
+// URL sources use the same dialog and can be removed after explicit confirmation.
+func TestURLInstallAndRemoveFromDialog(t *testing.T) {
+	_, driver, root := newLibraryWindow(t)
+	clickLabel(t, driver, "安装")
+	clickLabel(t, driver, "技能来源")
+	if err := driver.Type("https://archify.si"); err != nil {
+		t.Fatal(err)
+	}
+	clickLabel(t, driver, "开始安装")
+	settle(t, driver, func() bool { return !drawn(t, driver, "安装 Skill 来源") })
+	sourcePath := filepath.Join(root, domain.SafeName("https://archify.si"))
+	if _, err := os.Stat(sourcePath); err != nil {
+		t.Fatal(err)
+	}
+	clickLabel(t, driver, "删除来源")
+	clickLabel(t, driver, "取消")
+	if _, err := os.Stat(sourcePath); err != nil {
+		t.Fatal("cancel removed source", err)
+	}
+	clickLabel(t, driver, "删除来源")
+	clickLabel(t, driver, "确认删除")
+	if _, err := os.Stat(sourcePath); !os.IsNotExist(err) {
+		t.Fatalf("source remains: %v", err)
+	}
+	if !drawn(t, driver, "还没有安装任何技能来源") {
+		t.Fatal("tree did not reload after removal")
+	}
 }

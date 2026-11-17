@@ -38,7 +38,9 @@ type UpdateResult struct {
 type Store interface {
 	// Sources lists the sources in the order the tree shows them.
 	Sources() []Source
-	// Install fetches a repository named "owner/repo" into the library, reporting
+	// Remove deletes one installed source and its owned enabled links.
+	Remove(source string) error
+	// Install fetches a remote source (owner/repo or HTTP(S)) into the library, reporting
 	// each stage through progress, which may be nil. It blocks for as long as the
 	// network does, so the caller runs it off the window thread and cancels it
 	// through ctx.

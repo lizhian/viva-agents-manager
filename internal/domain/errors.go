@@ -9,8 +9,8 @@ var (
 	ErrExpired = errors.New("技能已过期，请先取消过期标记")
 	// ErrEmptyRepo is what Install returns when it is given nothing to install.
 	ErrEmptyRepo = errors.New("domain: empty repository")
-	// ErrBadRepo is what Install returns for something that is not "owner/repo".
-	ErrBadRepo = errors.New("仓库须为 owner/repo，@ 为保留分隔符")
+	// ErrBadRepo is what Install returns for an invalid remote source.
+	ErrBadRepo = errors.New("来源须为 owner/repo 或有效的 HTTP(S) 网址")
 	// ErrAlreadyInstalled is what Install returns when the library already holds
 	// that repository.
 	ErrAlreadyInstalled = errors.New("domain: repository already installed")

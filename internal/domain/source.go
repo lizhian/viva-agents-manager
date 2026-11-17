@@ -4,6 +4,9 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -18,7 +21,7 @@ type Skill struct {
 }
 
 // Source is where skills come from. Name is its directory in the library; Repo
-// is the repository it was installed from, empty for a source that is only a
+// is the remote install address (owner/repo or HTTP(S)), empty for a source that is only a
 // folder on this machine.
 type Source struct {
 	Name        string
@@ -69,8 +72,103 @@ func ValidRepo(repo string) bool {
 // "mattpocock/skills" or a folder someone named that.
 const separator = "@"
 
-// SafeName is the directory a repository's skills are installed in.
-func SafeName(repo string) string { return strings.ReplaceAll(repo, "/", separator) }
+// NormalizeSource validates an install address and folds GitHub repository roots
+// into the existing shorthand. Other URL components retain their meaning.
+func NormalizeSource(input string) (string, error) {
+	return normalizeSource(input, true)
+}
+
+// collapseRoot is false only when checking names written by the old URL scheme.
+func normalizeSource(input string, collapseRoot bool) (string, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return "", ErrEmptyRepo
+	}
+	if ValidRepo(input) {
+		return input, nil
+	}
+	u, err := url.Parse(input)
+	if err != nil || u.Hostname() == "" || u.User != nil || strings.ContainsAny(input, " \t\r\n") {
+		return "", ErrBadRepo
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", ErrBadRepo
+	}
+	u.Host = strings.ToLower(u.Host)
+	if u.Host == "github.com" && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && !strings.Contains(input, "#") && u.RawPath == "" {
+		repo := strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), "/"), ".git")
+		if ValidRepo(repo) {
+			return repo, nil
+		}
+	}
+	if collapseRoot && u.Path == "/" && u.RawPath == "" {
+		u.Path, u.RawPath = "", ""
+	}
+	return u.String(), nil
+}
+
+// ValidInstallSource reports whether the input names an installable remote source.
+func ValidInstallSource(input string) bool { _, err := NormalizeSource(input); return err == nil }
+
+// SafeName keeps repository names compatible and gives URLs a bounded identity.
+func SafeName(source string) string {
+	normalized, err := NormalizeSource(source)
+	if err != nil {
+		return ""
+	}
+	if ValidRepo(normalized) {
+		return strings.ReplaceAll(normalized, "/", separator)
+	}
+	u, _ := url.Parse(normalized)
+	host := readablePart(u.Hostname(), 80)
+	if u.Scheme == "https" && u.Port() == "" && u.Path == "" && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && host == u.Hostname() {
+		return host
+	}
+	summary := host
+	if u.Port() != "" {
+		summary += "--p" + readablePart(u.Port(), 8)
+	}
+	if u.Scheme == "http" {
+		summary += "--http"
+	}
+	if path := readablePart(u.Path, 48); path != "site" {
+		summary += "--" + path
+	}
+	digest := sha256.Sum256([]byte(normalized))
+	return fmt.Sprintf("%s--%x", summary, digest[:6])
+}
+
+// MatchesSourceName accepts current URL names and the legacy full-hash names.
+// Legacy identities retain the original root slash when checking their hash.
+func MatchesSourceName(name, address string) bool {
+	if name == SafeName(address) {
+		return true
+	}
+	legacy, err := normalizeSource(address, false)
+	return err == nil && !ValidRepo(legacy) && name == fmt.Sprintf("url-%x", sha256.Sum256([]byte(legacy)))
+}
+
+// readablePart bounds a filesystem label and avoids reserved separators. The
+// digest, not the cleaned label, distinguishes complex URL identities.
+func readablePart(text string, limit int) string {
+	var b strings.Builder
+	for _, c := range strings.ToLower(text) {
+		if b.Len() >= limit {
+			break
+		}
+		if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '-' {
+			b.WriteRune(c)
+		} else if b.Len() > 0 {
+			b.WriteByte('-')
+		}
+	}
+	part := strings.Trim(b.String(), ".-")
+	if part == "" {
+		return "site"
+	}
+	return part
+}
 
 // RepoOf reads a repository back out of a library directory name. A name that
 // does not read back as a repository is a local source, and reports none.

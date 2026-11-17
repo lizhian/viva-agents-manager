@@ -196,6 +196,34 @@ var Sun = gfx.Icon{
 	},
 }
 
+// trash is a compiled vector icon.
+var Trash = gfx.Icon{
+	ViewBox: 24.0,
+	Stroke:  2.0,
+	Cap:     gfx.CapRound,
+	Join:    gfx.JoinRound,
+	Commands: []gfx.PathCommand{
+		gfx.MoveTo(10.0, 11.0),
+		gfx.LineTo(10.0, 17.0),
+		gfx.MoveTo(14.0, 11.0),
+		gfx.LineTo(14.0, 17.0),
+		gfx.MoveTo(19.0, 6.0),
+		gfx.LineTo(19.0, 20.0),
+		gfx.CubicTo(19.0, 21.1046, 18.1046, 22.0, 17.0, 22.0),
+		gfx.LineTo(7.0, 22.0),
+		gfx.CubicTo(5.89543, 22.0, 5.0, 21.1046, 5.0, 20.0),
+		gfx.LineTo(5.0, 6.0),
+		gfx.MoveTo(3.0, 6.0),
+		gfx.LineTo(21.0, 6.0),
+		gfx.MoveTo(8.0, 6.0),
+		gfx.LineTo(8.0, 4.0),
+		gfx.CubicTo(8.0, 2.89543, 8.89543, 2.0, 10.0, 2.0),
+		gfx.LineTo(14.0, 2.0),
+		gfx.CubicTo(15.1046, 2.0, 16.0, 2.89543, 16.0, 4.0),
+		gfx.LineTo(16.0, 6.0),
+	},
+}
+
 // x is a compiled vector icon.
 var X = gfx.Icon{
 	ViewBox: 24.0,

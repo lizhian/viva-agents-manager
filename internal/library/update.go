@@ -68,6 +68,9 @@ func (l *Library) replace(ctx context.Context, source domain.Source, progress fu
 	if err := stageSkills(prepared, stage); err != nil {
 		return err
 	}
+	if err := writeSourceAddress(stage, source.Repo); err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}

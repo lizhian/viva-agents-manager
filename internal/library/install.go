@@ -20,17 +20,25 @@ func (l *Library) Install(ctx context.Context, repo string, progress func(domain
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	repo = strings.TrimSpace(repo)
-	switch {
-	case repo == "":
-		return domain.ErrEmptyRepo
-	case !domain.ValidRepo(repo):
-		return domain.ErrBadRepo
+	normalized, err := domain.NormalizeSource(repo)
+	if err != nil {
+		return err
+	}
+	if domain.ValidRepo(normalized) {
+		repo = normalized
+	} else {
+		repo = strings.TrimSpace(repo)
+	}
+	// Directory names may use the old or new scheme; compare address identity.
+	for _, source := range l.scan() {
+		if identity, err := domain.NormalizeSource(source.Repo); err == nil && identity == normalized {
+			return fmt.Errorf("%w: %s", domain.ErrAlreadyInstalled, repo)
+		}
 	}
 	final := filepath.Join(l.config.Root, domain.SafeName(repo))
 	switch _, err := os.Lstat(final); {
 	case err == nil:
-		return fmt.Errorf("%w: %s", domain.ErrAlreadyInstalled, repo)
+		return fmt.Errorf("来源目录已被占用，保留原内容：%s", final)
 	case !os.IsNotExist(err):
 		return err
 	}
@@ -61,6 +69,9 @@ func (l *Library) Install(ctx context.Context, repo string, progress func(domain
 	defer os.RemoveAll(stage)
 
 	if err := stageSkills(prepared, stage); err != nil {
+		return err
+	}
+	if err := writeSourceAddress(stage, repo); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {

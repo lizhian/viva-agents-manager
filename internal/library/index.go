@@ -158,7 +158,7 @@ ORDER BY s.safe, k.name`)
 		if len(sources) == 0 || sources[len(sources)-1].Name != safe {
 			sources = append(sources, domain.Source{
 				Name:        safe,
-				Repo:        domain.RepoOf(safe),
+				Repo:        l.sourceAddress(safe),
 				InstalledAt: time.Unix(installedAt, 0),
 				Skills:      []domain.Skill{},
 			})

@@ -212,7 +212,7 @@ func (v *editorView) scroll(e gfx.ScrollEvent) gfx.EventResult {
 		return r
 	}
 	if contains(v.preview, e.X, e.Y) {
-		v.previewScroll = max(0, min(max(0, v.height-v.preview.Height), v.previewScroll-e.DeltaY))
+		v.previewScroll = max(0, min(max(0, v.height-v.preview.Height), v.previewScroll+e.DeltaY))
 		if v.mode == "split" && v.height > v.preview.Height {
 			v.code.SetScrollY(v.previewScroll / (v.height - v.preview.Height) * v.code.MaxScrollY())
 		}

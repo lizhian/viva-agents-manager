@@ -393,3 +393,56 @@ func TestTagsPopoverFiltersTogglesAndAdds(t *testing.T) {
 		t.Fatal("tag edits not persisted")
 	}
 }
+
+func TestDetailScrollDirection(t *testing.T) {
+	for _, mode := range []string{"source", "preview", "split"} {
+		panes := []string{mode}
+		if mode == "split" {
+			panes = []string{"source", "preview"}
+		}
+		for _, pane := range panes {
+			t.Run(mode+"/"+pane, func(t *testing.T) {
+				p, config := testPage(t)
+				id := p.store.Data.Add("长文档", strings.Repeat("一段用于滚动的正文。\n\n", 100))
+				p.selectSnippet(id)
+				p.editor.mode = mode
+				var canvas gfx.Canvas
+				driver, err := app.NewDriver(config, &canvas)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer driver.Close()
+				v := p.editor
+				v.code.SetScrollY(0)
+				v.previewScroll = 0
+				config.Invalidator.Invalidate()
+				if err := driver.Pump(); err != nil {
+					t.Fatal(err)
+				}
+				area := v.source
+				offset := func() float32 { return v.code.ScrollY() }
+				if pane == "preview" {
+					area = v.preview
+					offset = func() float32 { return v.previewScroll }
+				}
+				event := gfx.ScrollEvent{X: area.X + area.Width/2, Y: area.Y + area.Height/2, DeltaY: 120, Precise: true}
+				if err := driver.Scroll(event); err != nil {
+					t.Fatal(err)
+				}
+				if offset() <= 0 {
+					t.Fatalf("scroll down left offset at %v; want > 0", offset())
+				}
+				if mode == "split" && (v.code.ScrollY() <= 0 || v.previewScroll <= 0) {
+					t.Fatal("split panes did not scroll together")
+				}
+				event.DeltaY = -120
+				if err := driver.Scroll(event); err != nil {
+					t.Fatal(err)
+				}
+				if offset() > 0.01 {
+					t.Fatalf("scroll up left offset at %v; want 0", offset())
+				}
+			})
+		}
+	}
+}
