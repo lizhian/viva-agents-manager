@@ -74,6 +74,20 @@ func (m *Memory) UpdateAll(ctx context.Context, progress func(UpdateProgress)) [
 	return results
 }
 
+// UpdateSource reports the same simulated update for a single remote source.
+func (m *Memory) UpdateSource(ctx context.Context, name string, progress func(UpdateProgress)) UpdateResult {
+	for _, source := range m.sources {
+		if source.Name == name && source.Repo != "" {
+			err := ctx.Err()
+			if err == nil && progress != nil {
+				progress(UpdateProgress{Source: source.Repo, Total: 1, Stage: ProgressPreparing})
+			}
+			return UpdateResult{Source: source.Repo, Err: err}
+		}
+	}
+	return UpdateResult{Source: name, Err: ErrNoSkills}
+}
+
 // Document reads one skill's document. The memory store has no files, so it
 // hands back a short one of its own for any file of any skill it holds.
 func (m *Memory) Document(source, skill, file string) (Document, error) {

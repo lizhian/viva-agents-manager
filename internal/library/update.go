@@ -31,17 +31,35 @@ func (l *Library) UpdateAll(ctx context.Context, progress func(domain.UpdateProg
 		if ctx.Err() != nil {
 			return results
 		}
-		report := func(stage domain.Progress) {
-			if progress != nil {
-				progress(domain.UpdateProgress{
-					Source: source.Repo, Done: i, Total: len(sources), Stage: stage,
-				})
-			}
-		}
-		report(domain.ProgressPreparing)
-		results = append(results, domain.UpdateResult{Source: source.Repo, Err: l.replace(ctx, source, report)})
+		results = append(results, l.update(ctx, source, i, len(sources), progress))
 	}
 	return results
+}
+
+// UpdateSource fetches and replaces one installed remote source.
+func (l *Library) UpdateSource(ctx context.Context, name string, progress func(domain.UpdateProgress)) domain.UpdateResult {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	for _, source := range l.scan() {
+		if source.Name == name && source.Repo != "" {
+			return l.update(ctx, source, 0, 1, progress)
+		}
+	}
+	return domain.UpdateResult{Source: name, Err: domain.ErrNoSkills}
+}
+
+func (l *Library) update(ctx context.Context, source domain.Source, done, total int, progress func(domain.UpdateProgress)) domain.UpdateResult {
+	if err := ctx.Err(); err != nil {
+		return domain.UpdateResult{Source: source.Repo, Err: err}
+	}
+	report := func(stage domain.Progress) {
+		if progress != nil {
+			progress(domain.UpdateProgress{Source: source.Repo, Done: done, Total: total, Stage: stage})
+		}
+	}
+	report(domain.ProgressPreparing)
+	return domain.UpdateResult{Source: source.Repo, Err: l.replace(ctx, source, report)}
 }
 
 // replace fetches a source again and swaps its folder for what came back.

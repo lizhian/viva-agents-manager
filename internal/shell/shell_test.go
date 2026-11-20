@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -196,6 +197,17 @@ func drawn(t *testing.T, driver *app.Driver, value string) bool {
 		}
 	}
 	return false
+}
+
+func labelBounds(t *testing.T, driver *app.Driver, value string) gfx.Rect {
+	t.Helper()
+	for _, label := range driver.Snapshot().Labels {
+		if label.Value == value {
+			return label.Bounds
+		}
+	}
+	t.Fatalf("no text labelled %q", value)
+	return gfx.Rect{}
 }
 
 // TestSplitterDrag drives the divider the way a pointer would: dragging moves the
@@ -577,34 +589,143 @@ func newSeededWindow(t *testing.T, installer domain.Installer) (*Shell, *app.Dri
 	return newWindowWith(t, store)
 }
 
-// TestUpdateReportsItsResult clicks update and checks the status line says what
-// happened.
+func TestSkillCountIncludesFilteredAndExpiredSkills(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	labelBounds(t, driver, "0/0")
+	installStub(t, driver)
+	labelBounds(t, driver, "0/3")
+	clickLabel(t, driver, "启用技能 owner/repo/alpha")
+	labelBounds(t, driver, "1/3")
+	clickLabel(t, driver, "搜索 Skills")
+	if err := driver.Type("alpha"); err != nil {
+		t.Fatal(err)
+	}
+	labelBounds(t, driver, "1/3")
+	clickLabel(t, driver, "过期")
+	labelBounds(t, driver, "0/3")
+}
+
+// TestUpdateReportsItsResult verifies the footer disappears on its own.
 func TestUpdateReportsItsResult(t *testing.T) {
 	_, driver, _ := newLibraryWindow(t)
 	installStub(t, driver)
 
 	clickLabel(t, driver, "更新")
+	const message = "1 个来源已更新"
+	settle(t, driver, func() bool { return drawn(t, driver, message) })
+	if labelBounds(t, driver, message).Y <= hitBounds(t, driver, "启用技能 owner/repo/tdd").Y {
+		t.Fatal("the result is not below the skill rows")
+	}
+	labelBounds(t, driver, "0/3")
+	if err := driver.Advance(2 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	labelBounds(t, driver, message)
+	if err := driver.Advance(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if drawn(t, driver, message) {
+		t.Fatal("the result is still shown after three seconds")
+	}
+}
+
+type failingInstaller struct{}
+
+func (failingInstaller) Prepare(context.Context, string, string) ([]domain.PreparedSkill, error) {
+	return nil, errors.New("offline")
+}
+
+func TestUpdateFailureCanBeDismissed(t *testing.T) {
+	_, driver := newSeededWindow(t, failingInstaller{})
+	clickLabel(t, driver, "更新")
+	const closeLabel = "关闭提示"
+	hasClose := func() bool {
+		for _, hit := range driver.Snapshot().Hits {
+			if hit.Label == closeLabel {
+				return true
+			}
+		}
+		return false
+	}
+	settle(t, driver, hasClose)
+	if err := driver.Advance(4 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	clickLabel(t, driver, closeLabel)
+	if hasClose() {
+		t.Fatal("the failure remained after closing it")
+	}
+}
+
+func TestSourceUpdateFloatsBesideTheSwitch(t *testing.T) {
+	_, driver, _ := newLibraryWindow(t)
+	installStub(t, driver)
+	const source = "owner/repo"
+	const toggleLabel = "启用来源 " + source
+	const updateLabel = "更新来源 " + source
+	moveTo := func(bounds gfx.Rect) {
+		t.Helper()
+		if err := driver.Move(bounds.X+bounds.Width/2, bounds.Y+bounds.Height/2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	withoutUpdate := func() {
+		t.Helper()
+		for _, hit := range driver.Snapshot().Hits {
+			if hit.Label == updateLabel {
+				t.Fatal("the update action is visible outside its source row")
+			}
+		}
+	}
+
+	name, toggle := labelBounds(t, driver, source), hitBounds(t, driver, toggleLabel)
+	withoutUpdate()
+	moveTo(name)
+	update := hitBounds(t, driver, updateLabel)
+	if update.X < name.X || update.X+update.Width > toggle.X {
+		t.Fatalf("update hit %v is outside the name's trailing area before the switch %v", update, toggle)
+	}
+	if labelBounds(t, driver, source) != name || hitBounds(t, driver, toggleLabel) != toggle {
+		t.Fatal("hover shifted the name or the source switch")
+	}
+	moveTo(toggle)
+	hitBounds(t, driver, updateLabel)
+	moveTo(hitBounds(t, driver, "搜索 Skills"))
+	withoutUpdate()
+
+	moveTo(name)
+	moveTo(update)
+	hitBounds(t, driver, updateLabel)
+	clickLabel(t, driver, updateLabel)
 	settle(t, driver, func() bool { return drawn(t, driver, "1 个来源已更新") })
+	labelBounds(t, driver, "0/3")
+	hitBounds(t, driver, "启用技能 owner/repo/tdd")
+	clickLabel(t, driver, toggleLabel)
+	labelBounds(t, driver, "3/3")
 }
 
 // TestUpdateCanBeCancelled checks that an update in flight offers to stop, and
 // that stopping says so.
 func TestUpdateCanBeCancelled(t *testing.T) {
-	window, driver := newSeededWindow(t, slowInstaller{})
-	// Give the toolbar enough room to show the full progress and result text.
-	pane := window.page().Pane()
-	from := window.split.Pos + kit.SplitterWidth + pane.Split.Pos + 4
-	drag(t, driver, from, from+200)
-
-	clickLabel(t, driver, "更新")
-	// Wait for the source to be in flight: stopping before it starts is a
-	// different path, and one this test is not about.
-	settle(t, driver, func() bool { return drawn(t, driver, "正在更新 1/1 · owner/repo") })
-	// The button carries no text, so what it offers while a run is in flight is
-	// its name: the glyph alone would leave the reader guessing.
-	hitBounds(t, driver, "取消")
-	clickLabel(t, driver, "取消")
-	settle(t, driver, func() bool { return drawn(t, driver, "已取消，0 个来源已更新") })
+	for _, action := range []string{"更新", "更新来源 owner/repo"} {
+		t.Run(action, func(t *testing.T) {
+			_, driver := newSeededWindow(t, slowInstaller{})
+			if action != "更新" {
+				name := labelBounds(t, driver, "owner/repo")
+				if err := driver.Move(name.X+name.Width/2, name.Y+name.Height/2); err != nil {
+					t.Fatal(err)
+				}
+			}
+			clickLabel(t, driver, action)
+			settle(t, driver, func() bool { return drawn(t, driver, "正在更新 1/1 · owner/repo") })
+			if err := driver.Advance(4 * time.Second); err != nil {
+				t.Fatal(err)
+			}
+			labelBounds(t, driver, "正在更新 1/1 · owner/repo")
+			clickLabel(t, driver, "取消")
+			settle(t, driver, func() bool { return drawn(t, driver, "已取消，0 个来源已更新") })
+		})
+	}
 }
 
 // TestTheHeaderScrollsWithTheBody checks that the skill's title and description

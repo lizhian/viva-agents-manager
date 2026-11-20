@@ -24,7 +24,7 @@ type TreeSpec struct {
 	Expired  func(branch, leaf int) bool
 	OnChoose func(branch, leaf int)
 	// Actions draw independent controls to the right of the row label.
-	BranchAction func(ui.C, gfx.Theme, int)
+	BranchAction func(ui.C, gfx.Theme, int, gfx.State)
 	LeafAction   func(ui.C, gfx.Theme, int, int)
 	// Empty is shown when nothing is visible.
 	Empty string
@@ -33,9 +33,10 @@ type TreeSpec struct {
 // Tree draws a two-level tree: branches that fold, and leaves that select. It
 // fills the rest of the column it is declared in.
 type Tree struct {
-	ScrollID gfx.ID
-	BranchID func(branch int) gfx.ID
-	LeafID   func(branch, leaf int) gfx.ID
+	ScrollID      gfx.ID
+	BranchID      func(branch int) gfx.ID
+	BranchHoverID func(branch int) gfx.ID
+	LeafID        func(branch, leaf int) gfx.ID
 }
 
 // Draw paints the tree into a column that takes the remaining height.
@@ -52,17 +53,21 @@ func (t *Tree) Draw(f ui.C, theme gfx.Theme, spec TreeSpec) {
 			if open {
 				marker = "▼"
 			}
-			ui.Row(f).FillWidth().Items(ui.Center).Gap(2).Children(func() {
-				row := ui.Row(f).Basis(0).Grow(1).PadSides(6, 0, 6, 8).Radius(6).Items(ui.Center).
+			row := ui.Row(f).FillWidth().Items(ui.Center).Gap(2).
+				HitWith(t.BranchHoverID(branch), "", gfx.HitOptions{SkipFocus: true})
+			row.Children(func() {
+				label := ui.Row(f).Basis(0).Grow(1).PadSides(6, 0, 6, 8).Radius(6).Items(ui.Center).
 					Hover(ui.Look{}.Background(theme.Hover)).Hit(t.BranchID(branch), node.Name)
-				if row.Children(func() {
+				if label.Children(func() {
 					ui.Text(f, marker).FontSize(8).Muted().Width(14)
 					ui.Text(f, node.Name).FontSize(12).Bold().FillWidth().Ellipsis()
 				}).Clicked() {
 					spec.OnToggle(branch)
 				}
 				if spec.BranchAction != nil {
-					spec.BranchAction(f, theme, branch)
+					state := label.State()
+					state.Hovered = state.Hovered || row.State().Hovered
+					spec.BranchAction(f, theme, branch, state)
 				}
 			})
 			if !open {

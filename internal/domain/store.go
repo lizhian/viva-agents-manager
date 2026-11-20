@@ -51,6 +51,8 @@ type Store interface {
 	// rest still update. It blocks, so the caller runs it off the window thread and
 	// cancels it through ctx.
 	UpdateAll(ctx context.Context, progress func(UpdateProgress)) []UpdateResult
+	// UpdateSource updates one remote source by its installed directory name.
+	UpdateSource(ctx context.Context, name string, progress func(UpdateProgress)) UpdateResult
 	// Document reads one file of a skill's directory: what it declares about
 	// itself, and its body. The skill's own document is "SKILL.md".
 	Document(source, skill, file string) (Document, error)

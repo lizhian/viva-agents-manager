@@ -9,7 +9,8 @@ import (
 // side is the theme toggle's, so every icon button in the window is the same
 // target, and the glyph is the 16 a Lucide icon is drawn at.
 const (
-	iconButtonSide   = 24
+	// IconButtonSide is the size of the icon button's hit region.
+	IconButtonSide   = 24
 	iconButtonRadius = 6
 	iconGlyphSide    = 16
 )
@@ -31,7 +32,7 @@ type IconButtonSpec struct {
 // IconButton draws one and reports a click on it. Viva's buttons carry text and
 // no icon, so an icon button is a row that is its own hit target.
 func IconButton(f ui.C, theme gfx.Theme, spec IconButtonSpec) bool {
-	row := ui.Row(f).Size(iconButtonSide, iconButtonSide).Radius(iconButtonRadius).Center().
+	row := ui.Row(f).Size(IconButtonSide, IconButtonSide).Radius(iconButtonRadius).Center().
 		HitWith(spec.ID, spec.Label, gfx.HitOptions{Cursor: gfx.PointerCursorHand, Disabled: spec.Disabled})
 	if !spec.Disabled {
 		row = row.Hover(ui.Look{}.Background(theme.Hover))

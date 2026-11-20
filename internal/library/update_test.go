@@ -5,10 +5,50 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/lizhian/viva-agents-manager/internal/domain"
 )
+
+func TestUpdateSourceOnlyReplacesTheTarget(t *testing.T) {
+	addresses := []string{"owner/repo", "https://example.com/skills"}
+	for _, target := range addresses {
+		t.Run(target, func(t *testing.T) {
+			ctx := context.Background()
+			library := newLibrary(t, twoSkills())
+			for _, address := range addresses {
+				if err := library.Install(ctx, address, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			installer := &recordingInstaller{fakeInstaller: fakeInstaller{skills: []fakeSkill{
+				{Name: "new-skill", Files: map[string]string{"SKILL.md": "# New skill"}},
+			}}}
+			library.config.Installer = installer
+			result := library.UpdateSource(ctx, domain.SafeName(target), nil)
+			if result.Source != target || result.Err != nil {
+				t.Fatalf("update result = %+v", result)
+			}
+			if !slices.Equal(installer.addresses, []string{target}) {
+				t.Fatalf("fetched %v, want just %q", installer.addresses, target)
+			}
+			sources := library.Sources()
+			if len(sources) != len(addresses) {
+				t.Fatalf("sources after updating %q = %+v", target, sources)
+			}
+			for _, source := range sources {
+				if source.Repo == target {
+					if len(source.Skills) != 1 || source.Skills[0].Name != "new-skill" {
+						t.Fatalf("updated source still has old skills: %+v", source)
+					}
+				} else if len(source.Skills) != 2 {
+					t.Fatalf("other source was changed: %+v", source)
+				}
+			}
+		})
+	}
+}
 
 // blockingInstaller waits for the context instead of answering, so a test can
 // see an update that is still running.

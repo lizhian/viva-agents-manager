@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/components"
@@ -31,7 +32,8 @@ const (
 	paneWidth = 220
 	// paneMin is the narrowest the column may get: wide enough for the search box
 	// and for a source's name beside the tree's chevron.
-	paneMin = 196
+	paneMin        = 196
+	noticeDuration = 3 * time.Second
 )
 
 // choice is the skill the content column shows. A name alone is not enough: two
@@ -87,6 +89,12 @@ type pending struct {
 	err      error
 }
 
+type notice struct {
+	text   string
+	failed bool
+	until  time.Duration
+}
+
 // Page is the Skills page's state: what the store holds, what the search box
 // asks for, and what is selected.
 type Page struct {
@@ -116,6 +124,7 @@ type Page struct {
 	folderDone         bool  // guarded by mu
 	folderErr          error // guarded by mu
 	sourceSwitchValues []bool
+	sourceUpdates      []kit.IconButtonSpec
 	branchSwitchLabels []string
 	leafSwitchLabels   [][]string
 	branchSwitches     gfx.Scope
@@ -147,9 +156,9 @@ type Page struct {
 	// updating is true from the press that starts an update until its results
 	// have been applied; updateCancel stops the one in flight.
 	updating        bool
-	enabledSummary  string
-	updateStatus    string
-	updateFailed    bool
+	skillCount      string
+	notice          notice
+	updateProgress  string
 	updateCancelled bool
 	updateCancel    context.CancelFunc
 
@@ -171,6 +180,7 @@ type ids struct {
 	previewSplit gfx.ID
 	previewClose gfx.ID
 	expired      gfx.ID
+	closeNotice  gfx.ID
 }
 
 // New builds the page in its own identity scope, reading the store once. The
@@ -184,6 +194,7 @@ func New(tree *gfx.Tree, scope gfx.Scope, store domain.Store, invalidator *app.I
 		repo:         tree.ID(scope, "repo"),
 		install:      tree.ID(scope, "install"),
 		update:       tree.ID(scope, "update"),
+		closeNotice:  tree.ID(scope, "close-notice"),
 		folder:       tree.ID(scope, "folder"),
 		skillFolder:  tree.ID(scope, "skill-folder"),
 		remove:       tree.ID(scope, "remove-source"),
@@ -202,7 +213,7 @@ func New(tree *gfx.Tree, scope gfx.Scope, store domain.Store, invalidator *app.I
 		Visible:      func(branch, leaf int) bool { return p.match(branch, leaf) },
 		Open:         p.branchOpen,
 		OnToggle:     p.toggleBranch,
-		BranchAction: p.drawSourceSwitch,
+		BranchAction: p.drawSourceActions,
 		LeafAction:   p.drawSkillSwitch,
 		Expired:      func(branch, leaf int) bool { return p.sources[branch].Skills[leaf].Expired },
 		Chosen: func(branch, leaf int) bool {
@@ -226,31 +237,40 @@ func (p *Page) reload() {
 
 func (p *Page) reloadSources() {
 	p.sources = slices.Clone(p.store.Sources())
-	enabled := 0
+	enabled, total := 0, 0
 	for _, source := range p.sources {
+		total += len(source.Skills)
 		for _, skill := range source.Skills {
 			if skill.Enabled && !skill.Expired {
 				enabled++
 			}
 		}
 	}
-	p.enabledSummary = fmt.Sprintf("已启用 %d 个技能", enabled)
+	p.skillCount = fmt.Sprintf("%d/%d", enabled, total)
 	for i := range p.sources {
 		p.sources[i].Skills = slices.Clone(p.sources[i].Skills)
 		slices.SortFunc(p.sources[i].Skills, compareSkills)
 	}
 	branches := p.tree.Sub(p.scope, p.tree.Name("branches"))
+	branchHovers := p.tree.Sub(p.scope, p.tree.Name("branch-hovers"))
 	leaves := make([]gfx.Scope, len(p.sources))
 	p.branchSwitches = p.tree.Sub(p.scope, p.tree.Name("source-switches"))
 	p.leafSwitches = make([]gfx.Scope, len(p.sources))
 	p.branchSwitchLabels = make([]string, len(p.sources))
 	p.sourceSwitchValues = make([]bool, len(p.sources))
+	p.sourceUpdates = make([]kit.IconButtonSpec, len(p.sources))
 	p.leafSwitchLabels = make([][]string, len(p.sources))
 	p.branches = make([]kit.Branch, len(p.sources))
 	for i, source := range p.sources {
 		leaves[i] = p.tree.Sub(p.scope, p.tree.Name(source.Name))
 		p.leafSwitches[i] = p.tree.Sub(p.branchSwitches, p.tree.Name(source.Name))
 		p.branchSwitchLabels[i] = "启用来源 " + source.Label()
+		if source.Repo != "" {
+			scope := p.tree.Sub(branches, p.tree.Name(source.Name))
+			p.sourceUpdates[i] = kit.IconButtonSpec{
+				ID: p.tree.ID(scope, "update"), Label: "更新来源 " + source.Label(), Icon: icons.RefreshCw,
+			}
+		}
 		p.leafSwitchLabels[i] = make([]string, len(source.Skills))
 		names := make([]string, len(source.Skills))
 		for j, skill := range source.Skills {
@@ -260,9 +280,10 @@ func (p *Page) reloadSources() {
 		p.branches[i] = kit.Branch{Name: source.Label(), Leaves: names}
 	}
 	p.treeView = kit.Tree{
-		ScrollID: p.tree.ID(p.scope, "list-scroll"),
-		BranchID: branches.At,
-		LeafID:   func(branch, leaf int) gfx.ID { return leaves[branch].At(leaf) },
+		ScrollID:      p.tree.ID(p.scope, "list-scroll"),
+		BranchID:      branches.At,
+		BranchHoverID: branchHovers.At,
+		LeafID:        func(branch, leaf int) gfx.ID { return leaves[branch].At(leaf) },
 	}
 	p.spec.Branches = p.branches
 	// An empty library and a search that matched nothing are different states,
@@ -666,11 +687,10 @@ func (p *Page) Dialog(f ui.C, theme gfx.Theme) {
 		}
 		if ui.Button(f, "确认删除").Clicked() {
 			err := p.store.Remove(p.removeSource)
-			p.updateFailed = err != nil
 			if err != nil {
-				p.updateStatus = "删除失败：" + err.Error()
+				p.notice = notice{text: "删除失败：" + err.Error(), failed: true}
 			} else {
-				p.updateStatus = "来源已删除"
+				p.notice = notice{text: "来源已删除"}
 			}
 			p.removeModal.Open = false
 			p.reload()
@@ -716,27 +736,51 @@ func (p *Page) drawPane(f ui.C, theme gfx.Theme, width float32) {
 	ui.Column(f).Width(width).Background(theme.Card).Children(func() {
 		// The buttons sit in the strip the content toolbar occupies, so the two
 		// columns read as one band. The row is the window's drag region, and the
-		// buttons inside it keep their own presses. Status shares the strip with
-		// them so updates never shift the search box or tree below it.
+		// buttons inside it keep their own presses.
 		ui.Row(f).Height(kit.Titlebar).PadSides(0, searchInset, 0, searchInset).
 			Items(ui.Center).Gap(6).MovesWindow().Children(func() {
-			if p.updateStatus != "" {
-				color := theme.MutedForeground
-				if p.updateFailed {
-					color = theme.Danger
-				}
-				ui.Text(f, p.updateStatus).FontSize(11).Color(color).
-					Basis(0).Grow(1).Ellipsis()
-			} else {
-				ui.Text(f, p.enabledSummary).FontSize(11).Muted().
-					Basis(0).Grow(1).Ellipsis()
-			}
+			ui.Text(f, p.skillCount).FontSize(11).Muted().Basis(0).Grow(1).Ellipsis()
 			p.buttons(f, theme)
 		})
 		ui.Column(f).PadSides(0, searchInset, searchInset, searchInset).Children(func() {
 			ui.TextFieldID(f, p.ids.search, &p.search, "搜索 Skills", "搜索 skills…").FillWidth()
 		})
 		p.treeView.Draw(f, theme, p.spec)
+		p.drawNotice(f, theme)
+	})
+}
+
+func (p *Page) drawNotice(f ui.C, theme gfx.Theme) {
+	message := p.notice
+	switch {
+	case p.updating:
+		message = notice{text: p.updateProgress}
+	case message.text == "":
+		return
+	case !message.failed:
+		now := f.Canvas().Now()
+		if p.notice.until == 0 {
+			p.notice.until = now + noticeDuration
+		}
+		remaining := p.notice.until - now
+		if remaining <= 0 {
+			p.notice = notice{}
+			return
+		}
+		f.Canvas().RequestFrameIn(remaining)
+	}
+	color := theme.MutedForeground
+	if message.failed {
+		color = theme.Danger
+	}
+	ui.Row(f).FillWidth().Shrink(0).PadSides(4, searchInset, 4, searchInset).
+		Items(ui.Center).Gap(4).Children(func() {
+		ui.Paragraph(f, message.text, 4).FontSize(11).Color(color).Basis(0).Grow(1)
+		if message.failed && kit.IconButton(f, theme, kit.IconButtonSpec{
+			ID: p.ids.closeNotice, Label: "关闭提示", Icon: icons.X,
+		}) {
+			f.After(func() { p.notice = notice{} })
+		}
 	})
 }
 
@@ -757,7 +801,7 @@ func (p *Page) buttons(f ui.C, theme gfx.Theme) {
 		if p.updating {
 			p.cancelUpdate()
 		} else {
-			p.startUpdate()
+			p.startUpdate("")
 		}
 	}
 	folder := kit.IconButtonSpec{ID: p.ids.folder, Label: "本地文件夹", Icon: icons.FolderOpen, Disabled: p.openingFolder}
@@ -825,7 +869,6 @@ func (p *Page) toggleBranch(branch int) {
 // openDialog shows the dialog with a clean slate.
 func (p *Page) openDialog() {
 	p.installErr = ""
-	p.updateStatus = ""
 	p.modal.Open = true
 }
 
@@ -842,6 +885,9 @@ func (p *Page) dismiss() {
 // takes as long as the network does, and the window must keep drawing while it
 // waits. What it produces comes back through Wake.
 func (p *Page) startInstall(repo string) {
+	if p.installing || p.updating {
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 	p.installing = true
@@ -874,19 +920,27 @@ func (p *Page) cancelInstall() {
 	}
 }
 
-// startUpdate fetches every source again off the window thread. It reports back
-// through Wake like an install does.
-func (p *Page) startUpdate() {
+// startUpdate fetches the named source, or all sources if name is empty.
+func (p *Page) startUpdate(name string) {
+	if p.updating || p.installing {
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.updateCancel = cancel
 	p.updating = true
-	p.updateFailed = false
 	p.updateCancelled = false
-	p.updateStatus = "正在更新…"
+	p.updateProgress = "正在更新…"
 	go func() {
-		results := p.store.UpdateAll(ctx, func(progress domain.UpdateProgress) {
+		defer cancel()
+		report := func(progress domain.UpdateProgress) {
 			p.publishUpdate(pendingUpdate{started: true, progress: progress})
-		})
+		}
+		var results []domain.UpdateResult
+		if name == "" {
+			results = p.store.UpdateAll(ctx, report)
+		} else {
+			results = []domain.UpdateResult{p.store.UpdateSource(ctx, name, report)}
+		}
 		p.publishUpdate(pendingUpdate{started: true, done: true, results: results})
 	}()
 }
@@ -921,12 +975,13 @@ func (p *Page) wakeUpdate() {
 		return
 	}
 	if !result.done {
-		p.updateStatus = updateProgressLabel(result.progress)
+		p.updateProgress = updateProgressLabel(result.progress)
 		return
 	}
 	p.updating = false
 	p.updateCancel = nil
-	p.updateStatus, p.updateFailed = updateResultLabel(result.results, p.updateCancelled)
+	message, failed := updateResultLabel(result.results, p.updateCancelled)
+	p.notice = notice{text: message, failed: failed}
 	p.reload()
 }
 
@@ -1032,8 +1087,8 @@ func failureMessage(err error) string {
 	}
 }
 
-// drawSourceSwitch aggregates every skill, including ones hidden by search.
-func (p *Page) drawSourceSwitch(f ui.C, theme gfx.Theme, branch int) {
+// drawSourceActions aggregates every skill, including ones hidden by search.
+func (p *Page) drawSourceActions(f ui.C, theme gfx.Theme, branch int, row gfx.State) {
 	source := p.sources[branch]
 	enabled, available := 0, 0
 	for _, skill := range source.Skills {
@@ -1046,14 +1101,30 @@ func (p *Page) drawSourceSwitch(f ui.C, theme gfx.Theme, branch int) {
 		}
 	}
 	all := available > 0 && enabled == available
-	if enabled > 0 && !all {
-		ui.Text(f, "部分").FontSize(10).Muted().Shrink(0)
-	}
 	p.sourceSwitchValues[branch] = all
-	if ui.Switch(f, &p.sourceSwitchValues[branch], "").Small().Shrink(0).
-		Label(p.branchSwitchLabels[branch]).Disabled(p.updating || p.installing || available == 0).Clicked() {
-		p.setEnabled(source.Name, "", p.sourceSwitchValues[branch])
-	}
+	update := p.sourceUpdates[branch]
+	update.Disabled = p.updating || p.installing
+	ui.Row(f).Shrink(0).Items(ui.Center).Gap(2).Children(func() {
+		if enabled > 0 && !all {
+			ui.Text(f, "部分").FontSize(10).Muted().Shrink(0)
+		}
+		toggle := ui.Switch(f, &p.sourceSwitchValues[branch], "").Small().Shrink(0).
+			Label(p.branchSwitchLabels[branch]).Disabled(update.Disabled || available == 0)
+		switchState, updateState := toggle.State(), f.Canvas().StateOf(update.ID)
+		if !update.ID.IsZero() && (row.Hovered || row.FocusVisible || switchState.Hovered ||
+			switchState.FocusVisible || updateState.Hovered || updateState.Pressed || updateState.FocusVisible) {
+			// Position over the end of the name, outside the actions' layout.
+			ui.Row(f).Absolute().Left(-kit.IconButtonSide - 2).Self(ui.Center).Radius(6).
+				Background(theme.Card).Children(func() {
+				if kit.IconButton(f, theme, update) {
+					f.After(func() { p.startUpdate(source.Name) })
+				}
+			})
+		}
+		if toggle.Clicked() {
+			f.After(func() { p.setEnabled(source.Name, "", p.sourceSwitchValues[branch]) })
+		}
+	})
 }
 
 func (p *Page) drawSkillSwitch(f ui.C, theme gfx.Theme, branch, leaf int) {
@@ -1067,14 +1138,13 @@ func (p *Page) drawSkillSwitch(f ui.C, theme gfx.Theme, branch, leaf int) {
 
 func (p *Page) setEnabled(source, skill string, enabled bool) {
 	err := p.store.SetEnabled(source, skill, enabled)
-	p.updateFailed = err != nil
 	switch {
 	case err != nil:
-		p.updateStatus = "切换失败：" + err.Error()
+		p.notice = notice{text: "切换失败：" + err.Error(), failed: true}
 	case enabled:
-		p.updateStatus = "已启用"
+		p.notice = notice{text: "已启用"}
 	default:
-		p.updateStatus = "已关闭"
+		p.notice = notice{text: "已关闭"}
 	}
 	p.reloadSources()
 }
@@ -1143,14 +1213,13 @@ func (p *Page) paintExpiry(canvas *gfx.Canvas, theme gfx.Theme) {
 		return
 	}
 	err := p.store.SetExpired(p.chosen.source, p.chosen.skill, !expired)
-	p.updateFailed = err != nil
 	switch {
 	case err != nil:
-		p.updateStatus = "设置过期失败：" + err.Error()
+		p.notice = notice{text: "设置过期失败：" + err.Error(), failed: true}
 	case expired:
-		p.updateStatus = "已取消过期，技能保持关闭"
+		p.notice = notice{text: "已取消过期，技能保持关闭"}
 	default:
-		p.updateStatus = "已标记过期并停用"
+		p.notice = notice{text: "已标记过期并停用"}
 	}
 	p.reloadSources()
 	if p.invalidator != nil {
@@ -1188,7 +1257,7 @@ func (p *Page) wakeFolder() {
 	}
 	p.openingFolder = false
 	if err != nil {
-		p.updateStatus, p.updateFailed = "打开目录失败："+err.Error(), true
+		p.notice = notice{text: "打开目录失败：" + err.Error(), failed: true}
 	}
 }
 
