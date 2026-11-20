@@ -41,7 +41,7 @@ type Tree struct {
 
 // Draw paints the tree into a column that takes the remaining height.
 func (t *Tree) Draw(f ui.C, theme gfx.Theme, spec TreeSpec) {
-	ui.Scroll(f.Key("skill-list")).Grow(1).FillWidth().PadSides(4, 8, 12, 8).Gap(1).Children(func() {
+	ui.Scroll(f.Key("skill-list")).Grow(1).FillWidth().PadSides(4, 0, 12, 8).Gap(1).Children(func() {
 		drawn := 0
 		for branch, node := range spec.Branches {
 			if !t.anyVisible(spec, branch) {
@@ -53,7 +53,7 @@ func (t *Tree) Draw(f ui.C, theme gfx.Theme, spec TreeSpec) {
 			if open {
 				marker = "▼"
 			}
-			row := ui.Row(f).FillWidth().Items(ui.Center).Gap(2).
+			row := ui.Row(f).FillWidth().Items(ui.Center).
 				HitWith(t.BranchHoverID(branch), "", gfx.HitOptions{SkipFocus: true})
 			row.Children(func() {
 				label := ui.Row(f).Basis(0).Grow(1).PadSides(6, 0, 6, 8).Radius(6).Items(ui.Center).
@@ -78,7 +78,7 @@ func (t *Tree) Draw(f ui.C, theme gfx.Theme, spec TreeSpec) {
 					continue
 				}
 				// The leaves are indented past their branch's marker.
-				ui.Row(f).FillWidth().Items(ui.Center).Gap(2).Children(func() {
+				ui.Row(f).FillWidth().Items(ui.Center).Children(func() {
 					item := ui.Row(f).Basis(0).Grow(1).PadSides(5, 0, 5, 30).Radius(6).
 						Hover(ui.Look{}.Background(theme.Hover)).Hit(t.LeafID(branch, leaf), name)
 					if spec.Chosen != nil && spec.Chosen(branch, leaf) {

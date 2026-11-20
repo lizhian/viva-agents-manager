@@ -46,8 +46,10 @@ type Page interface {
 type Pane struct {
 	Split *ui.SplitterState
 	// Min is the narrowest the column may get.
-	Min  float32
-	Draw func(f ui.C, theme gfx.Theme, width float32)
+	Min float32
+	// SplitterWidth overrides the default grab strip when positive.
+	SplitterWidth float32
+	Draw          func(f ui.C, theme gfx.Theme, width float32)
 }
 
 // Base answers for the parts a page does not have, so a page declares only what

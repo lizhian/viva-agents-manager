@@ -206,7 +206,8 @@ func New(tree *gfx.Tree, scope gfx.Scope, store domain.Store, invalidator *app.I
 	p.preview.links = tree.Sub(scope, tree.Name("preview-links"))
 	p.modal = kit.NewModal(tree, scope, "install")
 	p.removeModal = kit.NewModal(tree, scope, "remove")
-	p.pane = pages.Pane{Split: &p.split, Min: paneMin, Draw: p.drawPane}
+	// The centered 1px divider leaves 2px between its left edge and the list.
+	p.pane = pages.Pane{Split: &p.split, Min: paneMin, SplitterWidth: 5, Draw: p.drawPane}
 	// The callbacks are made once: they read the page, so they follow a reload
 	// without being rebuilt.
 	p.spec = kit.TreeSpec{
@@ -1087,6 +1088,17 @@ func failureMessage(err error) string {
 	}
 }
 
+// listSwitch reserves 2px before the track and clips Viva's wider hit region
+// so that the switch and the adjacent row label can be clicked independently.
+func listSwitch(f ui.C, theme gfx.Theme, value *bool, label string, disabled bool) ui.Box {
+	width, _ := components.SwitchExtent(theme, true)
+	var toggle ui.Box
+	ui.Row(f).Shrink(0).PadLeft(2).Clip().Children(func() {
+		toggle = ui.Switch(f, value, "").Small().Width(width).Shrink(0).Label(label).Disabled(disabled)
+	})
+	return toggle
+}
+
 // drawSourceActions aggregates every skill, including ones hidden by search.
 func (p *Page) drawSourceActions(f ui.C, theme gfx.Theme, branch int, row gfx.State) {
 	source := p.sources[branch]
@@ -1104,12 +1116,11 @@ func (p *Page) drawSourceActions(f ui.C, theme gfx.Theme, branch int, row gfx.St
 	p.sourceSwitchValues[branch] = all
 	update := p.sourceUpdates[branch]
 	update.Disabled = p.updating || p.installing
-	ui.Row(f).Shrink(0).Items(ui.Center).Gap(2).Children(func() {
+	ui.Row(f).Shrink(0).Items(ui.Center).Children(func() {
 		if enabled > 0 && !all {
 			ui.Text(f, "部分").FontSize(10).Muted().Shrink(0)
 		}
-		toggle := ui.Switch(f, &p.sourceSwitchValues[branch], "").Small().Shrink(0).
-			Label(p.branchSwitchLabels[branch]).Disabled(update.Disabled || available == 0)
+		toggle := listSwitch(f, theme, &p.sourceSwitchValues[branch], p.branchSwitchLabels[branch], update.Disabled || available == 0)
 		switchState, updateState := toggle.State(), f.Canvas().StateOf(update.ID)
 		if !update.ID.IsZero() && (row.Hovered || row.FocusVisible || switchState.Hovered ||
 			switchState.FocusVisible || updateState.Hovered || updateState.Pressed || updateState.FocusVisible) {
@@ -1130,8 +1141,8 @@ func (p *Page) drawSourceActions(f ui.C, theme gfx.Theme, branch int, row gfx.St
 func (p *Page) drawSkillSwitch(f ui.C, theme gfx.Theme, branch, leaf int) {
 	source := p.sources[branch]
 	skill := source.Skills[leaf]
-	if ui.Switch(f, &p.sources[branch].Skills[leaf].Enabled, "").Small().Shrink(0).
-		Label(p.leafSwitchLabels[branch][leaf]).Disabled(p.updating || p.installing || skill.Expired).Clicked() {
+	if listSwitch(f, theme, &p.sources[branch].Skills[leaf].Enabled, p.leafSwitchLabels[branch][leaf],
+		p.updating || p.installing || skill.Expired).Clicked() {
 		p.setEnabled(source.Name, skill.Name, p.sources[branch].Skills[leaf].Enabled)
 	}
 }

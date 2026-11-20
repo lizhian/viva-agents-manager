@@ -143,7 +143,7 @@ func (s *Shell) paint(canvas *gfx.Canvas, size gfx.Size) {
 	// inside a gutter. Every pane left of the content is a card.
 	right := s.split.Pos + kit.SplitterWidth/2
 	if pane := s.page().Pane(); pane != nil {
-		right = s.split.Pos + kit.SplitterWidth + pane.Split.Pos + kit.SplitterWidth/2
+		right = s.split.Pos + kit.SplitterWidth + pane.Split.Pos + paneSplitterWidth(pane)/2
 	}
 	kit.CardFill(canvas, theme, right, size.Height)
 
@@ -153,6 +153,13 @@ func (s *Shell) paint(canvas *gfx.Canvas, size gfx.Size) {
 	s.paintTheme = theme
 	s.view.Draw(canvas, bounds, s.declareUI)
 	s.page().Overlay(canvas, theme)
+}
+
+func paneSplitterWidth(pane *pages.Pane) float32 {
+	if pane.SplitterWidth > 0 {
+		return pane.SplitterWidth
+	}
+	return kit.SplitterWidth
 }
 
 // declare paints the navigation, the panes and the selected page.
@@ -185,7 +192,7 @@ func (s *Shell) declare(f ui.C, theme gfx.Theme) {
 			// would otherwise claim the room the navigation needs.
 			ui.Row(f).FillWidth().Grow(1).Children(func() {
 				pane.Draw(f, theme, pane.Split.Pos)
-				ui.Splitter(f, pane.Split).Mins(pane.Min, contentMinBeside)
+				ui.Splitter(f, pane.Split).Width(paneSplitterWidth(pane)).Mins(pane.Min, contentMinBeside)
 				s.content(f, theme)
 			})
 		})
